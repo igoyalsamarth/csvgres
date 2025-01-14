@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { Parser } from 'node-sql-parser';
-import { CreateTableAst, SqlColumnDefinition, SqlAst } from './types';
+import { CreateTableAst, SqlColumnDefinition, SqlAst, InsertAst } from './types';
 
 interface ColumnDefinition {
   name: string;
@@ -28,12 +28,10 @@ export class CsvDatabase {
     try {
       const parser = new Parser();
       const parsedSql = parser.parse(sqlStatement) as SqlAst;
+
       console.log(parsedSql);
 
       const ast = parsedSql.ast[0] as CreateTableAst;
-      console.log(ast.type);
-      console.log(ast.table);
-      console.log(ast.table.length);
 
       if (ast.type !== 'create' || !ast.table || ast.table.length === 0) {
         throw new Error('Invalid CREATE TABLE statement');
@@ -50,8 +48,8 @@ export class CsvDatabase {
       try {
         await fs.access(filePath);
         throw new Error(`Table ${tableName} already exists`);
-      } catch (error: any) {
-        if (error.message.includes('already exists')) {
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('already exists')) {
           throw error;
         }
         // File doesn't exist, create it
@@ -70,8 +68,39 @@ export class CsvDatabase {
   }
 
   async insert(sqlStatement: string): Promise<void> {
-    // TODO: Implement insert functionality
-    console.log('Inserting data into table:', sqlStatement);
+    try {
+      const parser = new Parser();
+      const parsedSql = parser.parse(sqlStatement) as SqlAst;
+      const ast = parsedSql.ast as any;
+
+      if (ast.type !== 'insert') {
+        throw new Error('Invalid INSERT statement');
+      }
+
+      const tableName = ast.table[0].table;
+      const filePath = path.join(this.baseDir, `${tableName}.csv`);
+
+      try {
+        await fs.access(filePath);
+      } catch (error) {
+        throw new Error(`Table ${tableName} does not exist`);
+      }
+
+      if (!ast.values || !ast.values[0] || !ast.values[0].value) {
+        throw new Error('No values provided in INSERT statement');
+      }
+
+      const values = ast.values[0].value.map(val =>
+        val.type === 'string' ? `"${val.value}"` : val.value
+      ).join(',');
+
+      await fs.appendFile(filePath, values + '\n');
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error('Error inserting data:');
+      }
+      throw new Error('Unknown error occurred');
+    }
   }
 
   private extractColumns(ast: CreateTableAst): ColumnDefinition[] {

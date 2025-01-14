@@ -34,4 +34,9 @@ export interface SqlColumnDefinition {
   definition: {
     dataType: string;
   };
-} 
+}
+
+export interface InsertAst extends SqlStatement {
+  type: 'insert';
+  values: any[];
+}
