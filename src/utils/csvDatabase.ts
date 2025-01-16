@@ -71,7 +71,7 @@ export class CsvDatabase {
     try {
       const parser = new Parser();
       const parsedSql = parser.parse(sqlStatement) as SqlAst;
-      const ast = parsedSql.ast as any;
+      const ast = parsedSql.ast[0] as any;
 
       if (ast.type !== 'insert') {
         throw new Error('Invalid INSERT statement');
@@ -101,6 +101,118 @@ export class CsvDatabase {
       }
       throw new Error('Unknown error occurred');
     }
+  }
+
+  async select(sqlStatement: string): Promise<any[]> {
+    try {
+      const parser = new Parser();
+      const parsedSql = parser.parse(sqlStatement) as SqlAst;
+      const ast = parsedSql.ast[0] as any;
+
+      if (ast.type !== 'select') {
+        throw new Error('Invalid SELECT statement');
+      }
+
+      const tableName = ast.from[0].table;
+      const filePath = path.join(this.baseDir, `${tableName}.csv`);
+
+      // Check if file exists
+      try {
+        await fs.access(filePath);
+      } catch (error) {
+        throw new Error(`Table ${tableName} does not exist`);
+      }
+
+      // Read CSV file
+      const fileContent = await fs.readFile(filePath, 'utf-8');
+      const lines = fileContent.trim().split('\n');
+      const headers = lines[0].split(',');
+
+      // Parse CSV data into array of objects
+      const data = lines.slice(1).map(line => {
+        const values = this.parseCSVLine(line);
+        return headers.reduce((obj, header, index) => {
+          obj[header] = values[index];
+          return obj;
+        }, {} as Record<string, string>);
+      });
+
+      // Apply WHERE clause if it exists
+      let results = data;
+      if (ast.where) {
+        results = data.filter(row => this.evaluateWhereClause(row, ast.where));
+      }
+
+      // Select only requested columns
+      const selectedColumns = ast.columns[0].expr.column === '*'
+        ? headers
+        : ast.columns.map((col: any) => col.expr.column);
+
+      return results.map(row => {
+        if (selectedColumns === headers) return row;
+        return selectedColumns.reduce((obj: any, col: string) => {
+          obj[col] = row[col];
+          return obj;
+        }, {});
+      });
+
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error('Error selecting data:', error.message);
+        throw error;
+      }
+      throw new Error('Unknown error occurred');
+    }
+  }
+
+  private parseCSVLine(line: string): string[] {
+    const values: string[] = [];
+    let currentValue = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') {
+        inQuotes = !inQuotes;
+      } else if (char === ',' && !inQuotes) {
+        values.push(currentValue);
+        currentValue = '';
+      } else {
+        currentValue += char;
+      }
+    }
+    values.push(currentValue);
+    return values;
+  }
+
+  private evaluateWhereClause(row: Record<string, string>, where: any): boolean {
+    const evaluateCondition = (condition: any): boolean => {
+      const left = condition.left.column ? row[condition.left.column] : condition.left.value;
+      const right = condition.right.column ? row[condition.right.column] : condition.right.value;
+
+      // Convert values based on the right operand's type
+      const leftValue = condition.right.type === 'number' ? Number(left) : String(left).trim();
+      const rightValue = condition.right.type === 'number' ? Number(right) : String(right).trim();
+
+      switch (condition.operator) {
+        case '=':
+          return leftValue === rightValue;
+        case '>':
+          return leftValue > rightValue;
+        case '<':
+          return leftValue < rightValue;
+        case '>=':
+          return leftValue >= rightValue;
+        case '<=':
+          return leftValue <= rightValue;
+        case '!=':
+          return leftValue !== rightValue;
+        default:
+          throw new Error(`Unsupported operator: ${condition.operator}`);
+      }
+    };
+
+    return evaluateCondition(where);
   }
 
   private extractColumns(ast: CreateTableAst): ColumnDefinition[] {

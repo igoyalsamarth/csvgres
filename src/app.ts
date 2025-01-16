@@ -42,6 +42,13 @@ router.post('/query', async (req: any, res: any) => {
         success: true,
         message: 'Data inserted successfully'
       });
+    } else if (query.toLowerCase().includes('select')) {
+      const results = await csvDb.select(query);
+      return res.json({
+        success: true,
+        data: results,
+        message: 'Data selected successfully'
+      });
     }
 
     return res.status(400).json({
