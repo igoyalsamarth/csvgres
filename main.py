@@ -1,0 +1,82 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from datetime import datetime
+from utils.csv_database import CsvDatabase
+
+app = FastAPI(title="CSV Database API")
+csv_db = CsvDatabase()
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Initialize the CSV database
+@app.on_event("startup")
+async def startup_event():
+    try:
+        csv_db.init()
+    except Exception as e:
+        print(f"Error initializing database: {e}")
+
+# Pydantic model for query requests
+class QueryRequest(BaseModel):
+    query: str
+
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "ok",
+        "timestamp": datetime.now().isoformat()
+    }
+
+# Query endpoint
+@app.post("/query")
+async def execute_query(request: QueryRequest):
+    try:
+        query = request.query.lower()
+        
+        if "create table" in query:
+            await csv_db.create_table(query)
+            return {
+                "success": True,
+                "message": "Table created successfully"
+            }
+        
+        elif "insert into" in query:
+            await csv_db.insert(query)
+            return {
+                "success": True,
+                "message": "Data inserted successfully"
+            }
+        
+        elif "select" in query:
+            results = await csv_db.select(query)
+            return {
+                "success": True,
+                "data": results.to_dict(orient='records'),
+                "message": "Data selected successfully"
+            }
+        
+        raise HTTPException(
+            status_code=400,
+            detail="Only CREATE TABLE, INSERT INTO, and SELECT queries are supported"
+        )
+    
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=str(error)
+        )
+
+if __name__ == "__main__":
+    import uvicorn
+    HOST = "0.0.0.0"
+    PORT = 3000
+    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
