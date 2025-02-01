@@ -7,6 +7,7 @@ import sqlglot
 from sqlglot import expressions as exp
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import shutil
 
 @dataclass
 class ColumnDefinition:
@@ -16,6 +17,7 @@ class ColumnDefinition:
 class CsvDatabase:
     def __init__(self, data_directory: str = 'data'):
         self.base_dir = data_directory
+        self.current_database = None  # Add this to track current database
 
     def init(self):
         """Initialize the database directory"""
@@ -25,59 +27,137 @@ class CsvDatabase:
             print(f'Error creating data directory: {error}')
             raise
 
-    def create_table(self, sql_statement: str) -> None:
+    async def create_database(self, sql_statement: str) -> None:
+        """Create a new database from CREATE DATABASE statement"""
+        try:
+            parsed = sqlglot.parse_one(sql_statement)
+
+            if not isinstance(parsed, exp.Create) or parsed.args.get('kind') != 'DATABASE':
+                raise ValueError('Invalid CREATE DATABASE statement')
+
+            database_name = parsed.args['this'].this.this
+            database_path = os.path.join(self.base_dir, database_name)
+
+            if os.path.exists(database_path):
+                raise ValueError(f'Database {database_name} already exists')
+
+            # Run directory creation in a thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            with ThreadPoolExecutor() as pool:
+                # Create directory with mode 0o755 (rwxr-xr-x)
+                await loop.run_in_executor(pool, lambda: os.makedirs(database_path, mode=0o755))
+                # Ensure parent directory also has correct permissions
+                await loop.run_in_executor(pool, lambda: os.chmod(self.base_dir, 0o755))
+        
+        except Exception as error:
+            print(f'Error creating database: {error}')
+            raise
+
+    async def connect_database(self, command: str) -> None:
+        """Connect to a database from a c or connect command"""
+        try:
+            # Strip whitespace and split command
+            parts = command.strip().split()
+            
+            # Check if command starts with any valid prefix
+            valid_prefixes = [r'\c', r'\connect', 'c', 'connect']
+            if not any(parts[0] == prefix for prefix in valid_prefixes):
+                raise ValueError('Invalid connect command. Use "c dbname" or "connect dbname"')
+
+            if len(parts) != 2:
+                raise ValueError('Invalid connect command. Use "c dbname" or "connect dbname"')
+
+            database_name = parts[1]
+            database_path = os.path.join(self.base_dir, database_name)
+
+            if not os.path.exists(database_path):
+                raise ValueError(f'Database {database_name} does not exist')
+            
+            if not os.path.isdir(database_path):
+                raise ValueError(f'{database_name} is not a valid database')
+
+            self.current_database = database_name
+            
+        except Exception as error:
+            print(f'Error connecting to database: {error}')
+            raise
+
+    async def create_table(self, sql_statement: str) -> None:
         """Create a new table from CREATE TABLE statement"""
         try:
-            # Parse the SQL statement
-            parsed = parse(sql_statement)[0]
-            if not parsed.get_type() == 'CREATE':
+            # Check if connected to a database
+            if self.current_database is None:
+                raise ValueError('Not connected to any database. Use connect command first.')
+
+            parsed = sqlglot.parse_one(sql_statement)
+
+            if not isinstance(parsed, exp.Create) or parsed.args.get('kind') != 'TABLE':
                 raise ValueError('Invalid CREATE TABLE statement')
 
             # Extract table name and columns
-            table_name = parsed.tokens[4].get_name()
+            table_name = parsed.args['this'].this.this
             columns = self._extract_columns(parsed)
+
+            print(f"Creating table {table_name} in database {self.current_database} with columns {columns}")
             
-            file_path = os.path.join(self.base_dir, f'{table_name}.csv')
+            # Use the current database path
+            database_path = os.path.join(self.base_dir, self.current_database)
+            file_path = os.path.join(database_path, f'{table_name}.csv')
             
             # Check if file exists
             if os.path.exists(file_path):
                 raise ValueError(f'Table {table_name} already exists')
             
-            # Create empty DataFrame with specified columns
-            df = pd.DataFrame(columns=[col.name for col in columns])
-            df.to_csv(file_path, index=False)
-            
+            # Create empty DataFrame with specified columns and save to CSV using thread pool
+            loop = asyncio.get_event_loop()
+            with ThreadPoolExecutor() as pool:
+                df = pd.DataFrame(columns=[col.name for col in columns])
+                await loop.run_in_executor(pool, lambda: df.to_csv(file_path, index=False))
+        
         except Exception as error:
             print(f'Error creating table: {error}')
             raise
 
-    def insert(self, sql_statement: str) -> None:
+    async def insert(self, sql_statement: str) -> None:
         """Insert data into table from INSERT statement"""
         try:
-            parsed = parse(sql_statement)[0]
-            if not parsed.get_type() == 'INSERT':
+            # Check if connected to a database
+            if self.current_database is None:
+                raise ValueError('Not connected to any database. Use connect command first.')
+
+            parsed = sqlglot.parse_one(sql_statement)
+            if not isinstance(parsed, exp.Insert):
                 raise ValueError('Invalid INSERT statement')
 
-            # Extract table name and values
-            table_name = parsed.tokens[2].get_name()
-            file_path = os.path.join(self.base_dir, f'{table_name}.csv')
+            # Extract table name
+            table_name = parsed.args['this'].this.this
+            file_path = os.path.join(self.base_dir, self.current_database, f'{table_name}.csv')
             
             if not os.path.exists(file_path):
                 raise ValueError(f'Table {table_name} does not exist')
 
             # Extract values from the INSERT statement
-            values_str = str(parsed.tokens[-1])
-            values = self._parse_values(values_str)
-            
-            # Read existing CSV
-            df = pd.read_csv(file_path)
-            
-            # Append new values
-            new_row = pd.DataFrame([values], columns=df.columns)
-            df = pd.concat([df, new_row], ignore_index=True)
-            
-            # Save updated CSV
-            df.to_csv(file_path, index=False)
+            values_list = []
+            if isinstance(parsed.args['expression'], exp.Values):
+                for tuple_expr in parsed.args['expression'].expressions:
+                    row_values = [
+                        val.this if isinstance(val, exp.Literal) else val.this.this
+                        for val in tuple_expr.expressions
+                    ]
+                    values_list.append(row_values)
+
+            # Run pandas operations in a thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            with ThreadPoolExecutor() as pool:
+                # Read existing CSV
+                df = await loop.run_in_executor(pool, pd.read_csv, file_path)
+                
+                # Append new values
+                new_rows = pd.DataFrame(values_list, columns=df.columns)
+                df = pd.concat([df, new_rows], ignore_index=True)
+                
+                # Save updated CSV
+                await loop.run_in_executor(pool, lambda: df.to_csv(file_path, index=False))
             
         except Exception as error:
             print(f'Error inserting data: {error}')
@@ -86,6 +166,10 @@ class CsvDatabase:
     async def select(self, sql_statement: str) -> pd.DataFrame:
         """Execute SELECT statement and return results"""
         try:
+            # Check if connected to a database
+            if self.current_database is None:
+                raise ValueError('Not connected to any database. Use connect command first.')
+
             # Parse the SQL into an AST
             parsed = sqlglot.parse_one(sql_statement)
 
@@ -93,9 +177,9 @@ class CsvDatabase:
                 raise ValueError('Invalid SELECT statement')
 
             # Extract table name from the From expression
-            from_expr = parsed.args['from']  # Access the from clause directly from args
-            table_name = from_expr[0].this.this  # Get table name from the From expression
-            file_path = os.path.join(self.base_dir, f'{table_name}.csv')
+            from_expr = parsed.args['from']
+            table_name = from_expr[0].this.this
+            file_path = os.path.join(self.base_dir, self.current_database, f'{table_name}.csv')
 
             if not os.path.exists(file_path):
                 raise ValueError(f'Table {table_name} does not exist')
@@ -123,14 +207,103 @@ class CsvDatabase:
             print(f'Error selecting data: {error}')
             raise
 
+    async def delete_row(self, sql_statement: str) -> None:
+        """Delete a row from a table"""
+        try:
+            # Check if connected to a database
+            if self.current_database is None:
+                raise ValueError('Not connected to any database. Use connect command first.')
+
+            parsed = sqlglot.parse_one(sql_statement)
+            
+            if not isinstance(parsed, exp.Delete):
+                raise ValueError('Invalid DELETE statement')
+
+            table_name = parsed.args['this'].this.this
+            file_path = os.path.join(self.base_dir, self.current_database, f'{table_name}.csv')
+
+            if not os.path.exists(file_path):
+                raise ValueError(f'Table {table_name} does not exist')
+
+            # Run pandas operations in a thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            with ThreadPoolExecutor() as pool:
+                df = await loop.run_in_executor(pool, pd.read_csv, file_path)
+
+                # Handle WHERE clause
+                if parsed.args.get('where'):
+                    condition = self._parse_where_expression(parsed.args['where'])
+                    # Keep rows that DON'T match the condition (i.e., delete the matching ones)
+                    mask = ~df.eval(condition)  # Using ~ to invert the boolean mask
+                    df = df[mask]
+                else:
+                    # If no WHERE clause, delete all rows by creating empty DataFrame with same columns
+                    df = pd.DataFrame(columns=df.columns)
+                
+                # Save the updated DataFrame
+                await loop.run_in_executor(pool, lambda: df.to_csv(file_path, index=False))
+
+        except Exception as error:
+            print(f'Error deleting row: {error}')
+            raise
+
+    async def drop_table(self, sql_statement: str) -> None:
+        """Drop a table from a database"""
+        try:
+            # Check if connected to a database
+            if self.current_database is None:
+                raise ValueError('Not connected to any database. Use connect command first.')
+
+            parsed = sqlglot.parse_one(sql_statement)
+            if not isinstance(parsed, exp.Drop) or parsed.args.get('kind') != 'TABLE':
+                raise ValueError('Invalid DROP TABLE statement')
+
+            table_name = parsed.args['this'].this.this
+            file_path = os.path.join(self.base_dir, self.current_database, f'{table_name}.csv')
+
+            if not os.path.exists(file_path):
+                raise ValueError(f'Table {table_name} does not exist')
+
+            os.remove(file_path)
+            
+        except Exception as error:
+            print(f'Error dropping table: {error}')
+            raise
+
+    async def drop_database(self, sql_statement: str) -> None:
+        """Drop a database"""
+        try:
+            parsed = sqlglot.parse_one(sql_statement)
+            if not isinstance(parsed, exp.Drop) or parsed.args.get('kind') != 'DATABASE':
+                raise ValueError('Invalid DROP DATABASE statement')
+            
+            database_name = parsed.args['this'].this.this
+            database_path = os.path.join(self.base_dir, database_name)
+
+            if not os.path.exists(database_path):
+                raise ValueError(f'Database {database_name} does not exist')
+            
+            # Prevent dropping the currently connected database
+            if self.current_database == database_name:
+                raise ValueError(f'Cannot drop database {database_name} while connected to it. Please connect to a different database first.')
+            
+            # Use shutil.rmtree instead of os.rmdir to remove directory and all contents
+            loop = asyncio.get_event_loop()
+            with ThreadPoolExecutor() as pool:
+                await loop.run_in_executor(pool, lambda: shutil.rmtree(database_path))
+        
+        except Exception as error:
+            print(f'Error dropping database: {error}')
+            raise
+
     def _extract_columns(self, parsed) -> List[ColumnDefinition]:
         """Extract column definitions from CREATE TABLE statement"""
         columns = []
-        parenthesis = next(token for token in parsed.tokens if token.is_group)
-        for token in parenthesis.tokens:
-            if token.ttype is None and not str(token).isspace():
-                name, data_type = str(token).split()[0:2]
-                columns.append(ColumnDefinition(name=name, type=data_type))
+        # Get the column definitions from the schema
+        for col in parsed.args['this'].expressions:
+            name = col.this.this  # Column name
+            data_type = col.kind.this.name  # Data type
+            columns.append(ColumnDefinition(name=name, type=data_type))
         return columns
 
     def _parse_values(self, values_str: str) -> List[Any]:
@@ -144,9 +317,16 @@ class CsvDatabase:
         if isinstance(where_expr, exp.Where):
             return self._parse_where_expression(where_expr.this)
         elif isinstance(where_expr, exp.EQ):
-            return f"{where_expr.this.this} == {where_expr.expression.this}"
+            # Handle string literals by adding quotes
+            expr_value = where_expr.expression.this
+            if isinstance(where_expr.expression, exp.Literal) and where_expr.expression.is_string:
+                expr_value = f"'{expr_value}'"
+            return f"{where_expr.this.this} == {expr_value}"
         elif isinstance(where_expr, exp.NEQ):
-            return f"{where_expr.this.this} != {where_expr.expression.this}"
+            expr_value = where_expr.expression.this
+            if isinstance(where_expr.expression, exp.Literal) and where_expr.expression.is_string:
+                expr_value = f"'{expr_value}'"
+            return f"{where_expr.this.this} != {expr_value}"
         elif isinstance(where_expr, exp.GT):
             return f"{where_expr.this.this} > {where_expr.expression.this}"
         elif isinstance(where_expr, exp.LT):
@@ -156,4 +336,4 @@ class CsvDatabase:
         elif isinstance(where_expr, exp.LTE):
             return f"{where_expr.this.this} <= {where_expr.expression.this}"
         else:
-            raise ValueError(f"Unsupported WHERE condition: {type(where_expr)}") 
+            raise ValueError(f"Unsupported WHERE condition: {type(where_expr)}")

@@ -42,12 +42,27 @@ async def execute_query(request: QueryRequest):
     try:
         query = request.query.lower()
         
-        if "create table" in query:
+        if "create database" in query:
+            await csv_db.create_database(query)
+            return {
+                "success": True,
+                "message": "Database created successfully"
+            }
+        
+        elif any(cmd in query for cmd in [r'\c', r'\connect', 'c ', 'connect ']):
+            await csv_db.connect_database(query)
+            return {
+                "success": True,
+                "message": "Database connected successfully"
+            }
+
+        elif "create table" in query:
             await csv_db.create_table(query)
             return {
                 "success": True,
                 "message": "Table created successfully"
             }
+        
         
         elif "insert into" in query:
             await csv_db.insert(query)
@@ -64,6 +79,26 @@ async def execute_query(request: QueryRequest):
                 "message": "Data selected successfully"
             }
         
+        elif "delete from" in query:
+            await csv_db.delete_row(query)
+            return {
+                "success": True,
+                "message": "Row deleted successfully"
+            }
+        
+        elif "drop table" in query:
+            await csv_db.drop_table(query)
+            return {
+                "success": True,
+                "message": "Table dropped successfully"
+            }
+        
+        elif "drop database" in query:
+            await csv_db.drop_database(query)
+            return {
+                "success": True,
+                "message": "Database dropped successfully"
+            }
         raise HTTPException(
             status_code=400,
             detail="Only CREATE TABLE, INSERT INTO, and SELECT queries are supported"
