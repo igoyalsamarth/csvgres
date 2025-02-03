@@ -18,7 +18,8 @@ class ColumnDefinition:
     primary_key: bool = False
     unique: bool = False
     default: Optional[Any] = None
-    auto_increment_counter: Optional[int] = None  # For SERIAL columns
+    initial_counter_value: Optional[int] = 1
+    auto_increment_counter: Optional[int] = 1  # For SERIAL columns
 
 class CsvDatabase:
     def __init__(self, data_directory: str = 'data'):
@@ -122,9 +123,14 @@ class CsvDatabase:
             
             for col in columns:
                 col_meta = {
-                    'type': col.type,
-                    'is_serial': col.is_serial
+                    'type': col.type
                 }
+                
+                # Only add is_serial if True
+                if col.is_serial:
+                    col_meta['is_serial'] = True
+                    col_meta['initial_counter_value'] = col.initial_counter_value or 1
+                    col_meta['auto_increment_counter'] = col.initial_counter_value or 1  # Use initial value if provided
                 
                 # Only add non-redundant fields
                 if col.primary_key:
@@ -137,9 +143,6 @@ class CsvDatabase:
                     
                 if col.default is not None and not col.is_serial:  # Don't include default for SERIAL
                     col_meta['default'] = col.default
-                    
-                if col.is_serial:  # Only include auto_increment_counter for SERIAL columns
-                    col_meta['auto_increment_counter'] = col.auto_increment_counter
                     
                 metadata['columns'][col.name] = col_meta
             
@@ -169,8 +172,11 @@ class CsvDatabase:
 
             table_name = parsed.args['this'].this.this
             database_path = os.path.join(self.base_dir, self.current_database)
-            file_path = os.path.join(database_path, f'{table_name}.csv')
-            meta_path = os.path.join(database_path, f'{table_name}_meta.json')
+            metadata_path = os.path.join(database_path, '.metadata')
+            data_path = os.path.join(database_path, 'tables')
+            
+            file_path = os.path.join(data_path, f'{table_name}.csv')
+            meta_path = os.path.join(metadata_path, f'{table_name}.json')
             
             if not os.path.exists(file_path):
                 raise ValueError(f'Table {table_name} does not exist')
@@ -179,24 +185,31 @@ class CsvDatabase:
             metadata = await self._load_metadata(meta_path)
             columns_meta = metadata['columns']
 
-            # Get column names from INSERT statement if provided, otherwise use all columns
-            target_columns = None
+            # Get column names from INSERT statement if provided
+            provided_columns = []
             if parsed.args.get('columns'):
-                target_columns = [col.this.this for col in parsed.args['columns']]
+                provided_columns = [col.this.this for col in parsed.args['columns']]
+                # Validate that all specified columns exist
+                for col in provided_columns:
+                    if col not in columns_meta:
+                        raise ValueError(f"Column '{col}' does not exist in table '{table_name}'")
             else:
-                target_columns = list(columns_meta.keys())
+                # If no columns specified, use all non-SERIAL columns
+                provided_columns = [col_name for col_name, col_meta in columns_meta.items() 
+                                  if not col_meta.get('is_serial', False)]
 
             values_list = []
             if isinstance(parsed.args['expression'], exp.Values):
                 for tuple_expr in parsed.args['expression'].expressions:
                     row_values = {}
                     
-                    # First, initialize with default values for all columns
+                    # First, initialize all columns with defaults or NULL
                     for col_name, col_meta in columns_meta.items():
-                        if col_meta['is_serial']:
+                        if col_meta.get('is_serial', False):
+                            # Handle SERIAL columns
                             row_values[col_name] = col_meta['auto_increment_counter']
                             col_meta['auto_increment_counter'] += 1
-                        elif col_meta['default'] is not None:
+                        elif 'default' in col_meta:
                             row_values[col_name] = self._parse_value_with_type(
                                 col_meta['default'], 
                                 col_meta['type']
@@ -204,43 +217,52 @@ class CsvDatabase:
                         else:
                             row_values[col_name] = None
 
-                    # Then fill in provided values
+                    # Then fill in provided values for non-SERIAL columns
                     for i, val in enumerate(tuple_expr.expressions):
-                        col_name = target_columns[i]
+                        col_name = provided_columns[i]
                         col_meta = columns_meta[col_name]
                         
-                        parsed_value = self._parse_value_with_type(
-                            val.this if isinstance(val, exp.Literal) else val.this.this,
-                            col_meta['type']
-                        )
-                        row_values[col_name] = parsed_value
+                        # Skip SERIAL columns as they are auto-generated
+                        if not col_meta.get('is_serial', False):
+                            # Get the raw value
+                            raw_value = val.this if isinstance(val, exp.Literal) else val.this.this
+                            
+                            # For string literals, we need to handle them differently
+                            if isinstance(val, exp.Literal):
+                                if val.is_string and 'INT' in col_meta['type'].upper():
+                                    raise ValueError(f"Invalid integer value: String literal '{raw_value}' cannot be used for INT column '{col_name}'")
+                            
+                            parsed_value = self._parse_value_with_type(raw_value, col_meta['type'])
+                            row_values[col_name] = parsed_value
 
                     # Validate constraints
                     for col_name, value in row_values.items():
                         col_meta = columns_meta[col_name]
-                        if value is None and col_meta['not_null']:
+                        if value is None and (col_meta.get('not_null', False) or col_meta.get('primary_key', False)):
                             raise ValueError(f"Column '{col_name}' cannot be NULL")
 
                     values_list.append(row_values)
 
             loop = asyncio.get_event_loop()
             with ThreadPoolExecutor() as pool:
-                # Update metadata file with new auto_increment_counter values
-                await self._save_metadata(meta_path, metadata)
-                
-                # Update CSV file
+                # Read existing data to validate unique constraints
                 df = await loop.run_in_executor(pool, pd.read_csv, file_path)
                 new_rows = pd.DataFrame(values_list)
-                df = pd.concat([df, new_rows], ignore_index=True)
+                combined_df = pd.concat([df, new_rows], ignore_index=True)
                 
-                # Validate unique constraints
+                # Validate unique and primary key constraints
                 for col_name, col_meta in columns_meta.items():
-                    if col_meta['unique'] or col_meta['primary_key']:
-                        if df[col_name].duplicated().any():
-                            raise ValueError(f"Duplicate value in unique column '{col_name}'")
+                    if col_meta.get('unique', False) or col_meta.get('primary_key', False):
+                        duplicates = combined_df[col_name].duplicated()
+                        if duplicates.any():
+                            raise ValueError(f"Duplicate value in {'primary key' if col_meta.get('primary_key', False) else 'unique'} column '{col_name}'")
                 
-                await loop.run_in_executor(pool, lambda: df.to_csv(file_path, index=False))
-            
+                # If all validations pass, save the data and metadata
+                await asyncio.gather(
+                    loop.run_in_executor(pool, lambda: combined_df.to_csv(file_path, index=False)),
+                    loop.run_in_executor(pool, lambda: self._save_metadata(meta_path, metadata))
+                )
+        
         except Exception as error:
             print(f'Error inserting data: {error}')
             raise
@@ -261,7 +283,7 @@ class CsvDatabase:
             # Extract table name from the From expression
             from_expr = parsed.args['from']
             table_name = from_expr[0].this.this
-            file_path = os.path.join(self.base_dir, self.current_database, f'{table_name}.csv')
+            file_path = os.path.join(self.base_dir, self.current_database, 'tables', f'{table_name}.csv')
 
             if not os.path.exists(file_path):
                 raise ValueError(f'Table {table_name} does not exist')
@@ -302,7 +324,7 @@ class CsvDatabase:
                 raise ValueError('Invalid DELETE statement')
 
             table_name = parsed.args['this'].this.this
-            file_path = os.path.join(self.base_dir, self.current_database, f'{table_name}.csv')
+            file_path = os.path.join(self.base_dir, self.current_database, 'tables', f'{table_name}.csv')
 
             if not os.path.exists(file_path):
                 raise ValueError(f'Table {table_name} does not exist')
@@ -341,12 +363,22 @@ class CsvDatabase:
                 raise ValueError('Invalid DROP TABLE statement')
 
             table_name = parsed.args['this'].this.this
-            file_path = os.path.join(self.base_dir, self.current_database, f'{table_name}.csv')
+            data_path = os.path.join(self.base_dir, self.current_database, 'tables')
+            metadata_path = os.path.join(self.base_dir, self.current_database, '.metadata')
+            
+            file_path = os.path.join(data_path, f'{table_name}.csv')
+            meta_path = os.path.join(metadata_path, f'{table_name}.json')
 
             if not os.path.exists(file_path):
                 raise ValueError(f'Table {table_name} does not exist')
 
-            os.remove(file_path)
+            # Run file deletions in a thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            with ThreadPoolExecutor() as pool:
+                await asyncio.gather(
+                    loop.run_in_executor(pool, os.remove, file_path),
+                    loop.run_in_executor(pool, os.remove, meta_path) if os.path.exists(meta_path) else None
+                )
             
         except Exception as error:
             print(f'Error dropping table: {error}')
@@ -387,6 +419,7 @@ class CsvDatabase:
             # Check if it's SERIAL by looking at col.kind directly
             is_serial = str(col.kind).lower() == 'serial'
             primary_key = False
+            initial_value = None
             
             # First check for primary key constraint since it affects other properties
             if hasattr(col, 'constraints') and col.constraints:
@@ -394,17 +427,25 @@ class CsvDatabase:
                     if isinstance(constraint.kind, exp.PrimaryKeyColumnConstraint):
                         primary_key = True
                         break
+                    # Check for START WITH clause in constraints
+                    elif isinstance(constraint.kind, exp.DefaultColumnConstraint):
+                        if hasattr(constraint.kind.this, 'this'):
+                            try:
+                                initial_value = int(constraint.kind.this.this)
+                            except (ValueError, TypeError):
+                                pass
 
             # Set the data type and base properties
             if is_serial:
-                data_type = 'INTEGER'  # SERIAL columns are actually INTEGER type
-                # For SERIAL columns, we only need to track auto_increment_counter
+                data_type = 'INT'  # SERIAL columns are actually INTEGER type
+                # For SERIAL columns, include initial counter value if specified
                 columns.append(ColumnDefinition(
                     name=name,
                     type=data_type,
                     is_serial=True,
                     primary_key=primary_key,
-                    auto_increment_counter=1
+                    initial_counter_value=initial_value,
+                    auto_increment_counter=initial_value if initial_value is not None else 1
                 ))
                 continue
 
@@ -499,14 +540,68 @@ class CsvDatabase:
         else:
             raise ValueError(f"Unsupported WHERE condition: {type(where_expr)}")
 
+    async def _load_metadata(self, meta_path: str) -> dict:
+        """Load metadata from JSON file"""
+        import json
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as pool:
+            return await loop.run_in_executor(pool, lambda: json.load(open(meta_path, 'r')))
+
     def _save_metadata(self, meta_path: str, metadata: dict) -> None:
         """Save metadata to JSON file"""
         import json
         with open(meta_path, 'w') as f:
             json.dump(metadata, f, indent=2)
 
-    def _load_metadata(self, meta_path: str) -> dict:
-        """Load metadata from JSON file"""
-        import json
-        with open(meta_path, 'r') as f:
-            return json.load(f)
+    def _parse_value_with_type(self, value: Any, data_type: str) -> Any:
+        """Convert value to the specified SQL data type"""
+        try:
+            if value is None:
+                return None
+                
+            # If value is a string with quotes, remove them
+            if isinstance(value, str):
+                value = value.strip("'\"")
+                
+            # Normalize the data type string
+            data_type = data_type.upper()
+            
+            # Handle VARCHAR and other string types
+            if 'CHAR' in data_type or 'TEXT' in data_type:
+                return str(value)
+                
+            # Handle INTEGER types - strict parsing for strings
+            if 'INT' in data_type:
+                if isinstance(value, str) and not value.isdigit():
+                    raise ValueError(f"Invalid integer value: '{value}'")
+                return int(value)
+                
+            # Handle DECIMAL/NUMERIC types - strict parsing for strings
+            if 'DECIMAL' in data_type or 'NUMERIC' in data_type:
+                try:
+                    return float(value)
+                except ValueError:
+                    raise ValueError(f"Invalid decimal value: '{value}'")
+                
+            # Handle BOOLEAN type
+            if data_type == 'BOOLEAN':
+                if isinstance(value, str):
+                    if value.lower() in ('true', 't', 'yes', 'y', '1'):
+                        return True
+                    elif value.lower() in ('false', 'f', 'no', 'n', '0'):
+                        return False
+                    raise ValueError(f"Invalid boolean value: '{value}'")
+                return bool(value)
+                
+            # Handle DATE/TIMESTAMP types
+            if 'TIMESTAMP' in data_type or 'DATE' in data_type:
+                if value == 'CURRENT_TIMESTAMP':
+                    from datetime import datetime
+                    return datetime.now().isoformat()
+                return value
+                
+            # Default case: return as-is
+            return value
+            
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Cannot convert value '{value}' to type {data_type}: {str(e)}")
