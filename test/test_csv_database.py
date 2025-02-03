@@ -20,7 +20,7 @@ def db():
 async def test_create_database(db):
     # Test creating a new database
     await db.create_database("CREATE DATABASE testdb")
-    assert os.path.exists(os.path.join(db.base_dir, "testdb"))
+    assert os.path.isdir(os.path.join(db.base_dir, "testdb"))
     
     # Test creating duplicate database
     with pytest.raises(ValueError):
@@ -59,8 +59,23 @@ async def test_create_table(db):
     """
     await db.create_table(create_stmt)
     
-    table_path = os.path.join(db.base_dir, "testdb", "users.csv")
+    table_path = os.path.join(db.base_dir, "testdb", "tables", "users.csv")
+    metadata_path = os.path.join(db.base_dir, "testdb", ".metadata", "users.json")
+    
     assert os.path.exists(table_path)
+    assert os.path.exists(metadata_path)
+    
+    # Verify metadata contains table info
+    import json
+    with open(metadata_path, 'r') as f:
+        metadata = json.load(f)
+        assert "columns" in metadata
+        expected_columns = {
+            "id": {"type": "INT"},
+            "name": {"type": "VARCHAR"},
+            "age": {"type": "INT"}
+        }
+        assert metadata["columns"] == expected_columns
     
     # Verify column structure
     df = pd.read_csv(table_path)
@@ -79,13 +94,15 @@ async def test_insert_and_select(db):
     
     # Test select all
     result = await db.select("SELECT * FROM users")
+    assert isinstance(result, pd.DataFrame)
     assert len(result) == 1
-    assert result.iloc[0]["name"] == "John"
+    assert result.iloc[0].to_dict() == {"id": 1, "name": "John", "age": 30}
     
     # Test select with where clause
     result = await db.select("SELECT name, age FROM users WHERE age = 30")
+    assert isinstance(result, pd.DataFrame)
     assert len(result) == 1
-    assert list(result.columns) == ["name", "age"]
+    assert result.iloc[0].to_dict() == {"name": "John", "age": 30}
 
 @pytest.mark.asyncio
 async def test_delete_row(db):
@@ -109,10 +126,17 @@ async def test_drop_table(db):
     await db.connect_database(r"\c testdb")
     await db.create_table("CREATE TABLE users (id INT)")
     
+    metadata_path = os.path.join(db.base_dir, "testdb", ".metadata", "users.json")
+    
+    # Verify table exists in metadata before dropping
+    assert os.path.exists(metadata_path)
+    
     # Test dropping table
     await db.drop_table("DROP TABLE users")
-    table_path = os.path.join(db.base_dir, "testdb", "users.csv")
+    table_path = os.path.join(db.base_dir, "testdb", "tables", "users.csv")
+    table_metadata_path = os.path.join(db.base_dir, "testdb", ".metadata", "users.json")
     assert not os.path.exists(table_path)
+    assert not os.path.exists(table_metadata_path)
 
 @pytest.mark.asyncio
 async def test_drop_database(db):
