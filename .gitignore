@@ -1,5 +1,4 @@
 data
-csvgres
 __pycache_/
 .csvgres/
 csvdb-env/

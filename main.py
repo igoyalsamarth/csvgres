@@ -2,11 +2,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from datetime import datetime
-from utils.csv_database import CsvDatabase
+from csvgres.controller import CsvDatabase
 from api.router import get_routers
-from clerk_backend_api import Clerk
-import os
-from clerk_backend_api.jwks_helpers import authenticate_request, AuthenticateRequestOptions
 
 app = FastAPI(title="CSV Database API")
 csv_db = CsvDatabase()
@@ -125,5 +122,5 @@ for route in app.routes:
 if __name__ == "__main__":
     import uvicorn
     HOST = "0.0.0.0"
-    PORT = 3000
+    PORT = 8000
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")

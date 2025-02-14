@@ -28,24 +28,36 @@ class AuthService:
             auth_header = request.headers.get('authorization')
             
             if not auth_header or not auth_header.startswith('Bearer '):
+                print("Invalid or missing Bearer token")
                 return None
                         
-            # Verify the request using Clerk with correct authorized party
+            frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+            
+            # Verify the request using Clerk
             request_state = self.clerk.authenticate_request(
                 request,
                 AuthenticateRequestOptions(
-                    authorized_parties=['http://localhost:3000']  # Use your frontend URL instead of '*'
+                    authorized_parties=[frontend_url]
                 )
             )
             
             if not request_state.is_signed_in:
+                print(f"User is not signed in. Reason: {request_state.reason}")
                 return None
 
+            # Get user details from Clerk
+            user_id = request_state.payload.get('sub')
+        
+            # Get user's primary email
+            user = self.clerk.users.get(user_id=user_id)
+            primary_email_id = user.primary_email_address_id
+            email_data = self.clerk.email_addresses.get(email_address_id=primary_email_id)
+            
             # Extract relevant user data from the payload
             auth_data = UserAuth(
-                user_id=request_state.payload.get('sub'),
-                session_id=request_state.payload.get('sid'),
-                is_signed_in=request_state.is_signed_in
+                user_id=user_id,
+                is_signed_in=request_state.is_signed_in,
+                email=email_data.email_address if email_data else None
             )
             return auth_data
 
