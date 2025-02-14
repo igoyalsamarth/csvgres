@@ -6,6 +6,7 @@ csvdb-env/
 __pycache__/
 *.pyc
 .DS_Store
+.env.*
 .env
 
 # Python package build artifacts

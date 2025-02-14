@@ -3,6 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from datetime import datetime
 from utils.csv_database import CsvDatabase
+from api.router import get_routers
+from clerk_backend_api import Clerk
+import os
+from clerk_backend_api.jwks_helpers import authenticate_request, AuthenticateRequestOptions
 
 app = FastAPI(title="CSV Database API")
 csv_db = CsvDatabase()
@@ -109,6 +113,14 @@ async def execute_query(request: QueryRequest):
             status_code=500,
             detail=str(error)
         )
+
+# Include all routers from the API
+for router in get_routers():
+    app.include_router(router)
+    
+# Add this debug print
+for route in app.routes:
+    print(f"Registered route: {route.path}")
 
 if __name__ == "__main__":
     import uvicorn

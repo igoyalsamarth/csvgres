@@ -18,3 +18,6 @@ pytest-mock==3.12.0
 
 # Type Hints
 typing
+
+# Auth
+clerk-backend-api
