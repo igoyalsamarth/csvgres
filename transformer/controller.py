@@ -22,7 +22,7 @@ class Csvgres:
             raise
 
     async def create_database(self, sql_statement: str) -> None:
-        self.current_database = await self.db_ops.create_database(sql_statement, self.current_database)
+        self.current_database = await self.db_ops.create_database(sql_statement)
 
     async def drop_database(self, sql_statement: str) -> None:
         await self.db_ops.drop_database(sql_statement, self.current_database)

@@ -9,7 +9,7 @@ class DatabaseOperations:
     def __init__(self, base_dir: str):
         self.base_dir = base_dir
         
-    async def create_database(self, sql_statement: str, current_database: str) -> str:
+    async def create_database(self, sql_statement: str) -> str:
         """Create a new database from CREATE DATABASE statement"""
         try:
             parsed = sqlglot.parse_one(sql_statement)
