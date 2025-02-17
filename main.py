@@ -2,11 +2,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from datetime import datetime
-from csvgres.controller import CsvDatabase
+from transformer.controller import Csvgres
 from api.router import get_routers
 
 app = FastAPI(title="CSV Database API")
-csv_db = CsvDatabase()
+csv_db = Csvgres()
 
 # Add CORS middleware
 app.add_middleware(
