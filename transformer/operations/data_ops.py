@@ -13,12 +13,9 @@ class DataOperations:
         self.parser = SqlParser()
         self.type_handler = TypeHandler()
 
-    async def insert(self, sql_statement: str, current_database: str) -> None:
+    async def insert(self, sql_statement: str, current_database: str = 'csvgres') -> None:
         """Insert data into table from INSERT statement"""
         try:
-            # if current_database is None:
-            #     raise ValueError('Not connected to any database. Use connect command first.')
-
             parsed = sqlglot.parse_one(sql_statement)
             if not isinstance(parsed, exp.Insert):
                 raise ValueError('Invalid INSERT statement')
@@ -38,65 +35,77 @@ class DataOperations:
             metadata = await self._load_metadata(meta_path)
             columns_meta = metadata['columns']
 
-            # Get column names from INSERT statement if provided
-            provided_columns = []
-            if parsed.args.get('columns'):
-                provided_columns = [col.this.this for col in parsed.args['columns']]
-                for col in provided_columns:
+            # Create DataFrame from VALUES
+            values_data = []
+            if isinstance(parsed.args['expression'], exp.Values):
+                for tuple_expr in parsed.args['expression'].expressions:
+                    row = [val.this if isinstance(val, exp.Literal) else val.this.this 
+                          for val in tuple_expr.expressions]
+                    values_data.append(row)
+            # Get the columns from the INSERT statement or use all columns
+            if parsed.args['this'].expressions:
+                insert_columns = [col.this for col in parsed.args['this'].expressions]
+                for col in insert_columns:
                     if col not in columns_meta:
                         raise ValueError(f"Column '{col}' does not exist in table '{table_name}'")
             else:
-                provided_columns = [col_name for col_name, col_meta in columns_meta.items() 
-                                  if not col_meta.get('is_serial', False)]
+                insert_columns = list(columns_meta.keys())
+            # Initialize dictionary with all columns
+# Ensure correct column mapping
+            df_dict = {col: [] for col in columns_meta.keys()}  # Initialize all columns
 
-            values_list = []
-            if isinstance(parsed.args['expression'], exp.Values):
-                for tuple_expr in parsed.args['expression'].expressions:
-                    row_values = {}
-                    
-                    # Initialize all columns with defaults or NULL
-                    for col_name, col_meta in columns_meta.items():
-                        if col_meta.get('is_serial', False):
-                            row_values[col_name] = col_meta['auto_increment_counter']
-                            col_meta['auto_increment_counter'] += 1
-                        elif 'default' in col_meta:
-                            row_values[col_name] = self.type_handler.parse_value_with_type(
-                                col_meta['default'], 
-                                col_meta['type']
-                            )
-                        else:
-                            row_values[col_name] = None
+            for row in values_data:
+                row_dict = {col: None for col in columns_meta.keys()}  # Default None for all columns
 
-                    # Fill in provided values
-                    for i, val in enumerate(tuple_expr.expressions):
-                        col_name = provided_columns[i]
-                        col_meta = columns_meta[col_name]
-                        
-                        if not col_meta.get('is_serial', False):
-                            raw_value = val.this if isinstance(val, exp.Literal) else val.this.this
-                            
-                            if isinstance(val, exp.Literal):
-                                if val.is_string and 'INT' in col_meta['type'].upper():
-                                    raise ValueError(f"Invalid integer value: String literal '{raw_value}' cannot be used for INT column '{col_name}'")
-                            
-                            parsed_value = self.type_handler.parse_value_with_type(raw_value, col_meta['type'])
-                            row_values[col_name] = parsed_value
+                # Map each column in insert_columns to its corresponding value in row
+                for i, col in enumerate(insert_columns):
+                    if i < len(row):  # Ensure we do not go out of index
+                        row_dict[col] = row[i]  
 
-                    # Validate constraints
-                    for col_name, value in row_values.items():
-                        col_meta = columns_meta[col_name]
-                        if value is None and (col_meta.get('not_null', False) or col_meta.get('primary_key', False)):
-                            raise ValueError(f"Column '{col_name}' cannot be NULL")
+                # Append mapped values correctly
+                for col in df_dict:
+                    df_dict[col].append(row_dict[col])
 
-                    values_list.append(row_values)
 
+            new_rows = pd.DataFrame(df_dict)
+
+            for col_name, col_meta in columns_meta.items():
+                if col_meta.get('is_serial', False):
+                    null_mask = new_rows[col_name].isnull()
+                    new_rows.loc[null_mask, col_name] = col_meta['auto_increment_counter']
+                    col_meta['auto_increment_counter'] += null_mask.sum()
+                elif 'default' in col_meta:
+                    default_value = self.type_handler.parse_value_with_type(
+                        col_meta['default'], 
+                        col_meta['type']
+                    )
+                    new_rows[col_name] = new_rows[col_name].fillna(default_value)
+
+            # Type validation
+            for col_name, col_meta in columns_meta.items():
+                if col_name in new_rows.columns:
+                    # Convert values according to their types
+                    try:
+                        new_rows[col_name] = new_rows[col_name].apply(
+                            lambda x: self.type_handler.parse_value_with_type(x, col_meta['type'])
+                        )
+                    except Exception as e:
+                        raise ValueError(f"Type validation failed for column '{col_name}': {str(e)}")
+
+            # Constraint validation
+            for col_name, col_meta in columns_meta.items():
+                # NOT NULL constraint
+                if col_meta.get('not_null', False) or col_meta.get('primary_key', False):
+                    if new_rows[col_name].isnull().any():
+                        raise ValueError(f"Column '{col_name}' cannot be NULL")
+
+            # Read existing data and combine
             loop = asyncio.get_event_loop()
             with ThreadPoolExecutor() as pool:
-                df = await loop.run_in_executor(pool, pd.read_csv, file_path)
-                new_rows = pd.DataFrame(values_list)
-                combined_df = pd.concat([df, new_rows], ignore_index=True)
+                existing_df = await loop.run_in_executor(pool, pd.read_csv, file_path)
+                combined_df = pd.concat([existing_df, new_rows], ignore_index=True)
                 
-                # Validate unique and primary key constraints
+                # Unique and Primary Key constraints
                 for col_name, col_meta in columns_meta.items():
                     if col_meta.get('unique', False) or col_meta.get('primary_key', False):
                         duplicates = combined_df[col_name].duplicated()
@@ -107,17 +116,14 @@ class DataOperations:
                     loop.run_in_executor(pool, lambda: combined_df.to_csv(file_path, index=False)),
                     loop.run_in_executor(pool, lambda: self._save_metadata(meta_path, metadata))
                 )
-        
+
         except Exception as error:
             print(f'Error inserting data: {error}')
             raise
 
-    async def select(self, sql_statement: str, current_database: str) -> pd.DataFrame:
+    async def select(self, sql_statement: str, current_database: str = 'csvgres') -> pd.DataFrame:
         """Execute SELECT statement and return results"""
         try:
-            # if current_database is None:
-            #     raise ValueError('Not connected to any database. Use connect command first.')
-
             parsed = sqlglot.parse_one(sql_statement)
             if not isinstance(parsed, exp.Select):
                 raise ValueError('Invalid SELECT statement')
@@ -132,23 +138,32 @@ class DataOperations:
             loop = asyncio.get_event_loop()
             with ThreadPoolExecutor() as pool:
                 df = await loop.run_in_executor(pool, pd.read_csv, file_path)  
-
                 if parsed.args.get('where'):
                     condition = self.parser.parse_where_expression(parsed.args['where'])
-                    df = await loop.run_in_executor(pool, lambda: df.query(condition))
-
-                if isinstance(parsed.expressions[0], exp.Star):
-                    return df
-                else:
-                    columns = [expr.this.this if isinstance(expr, exp.Column) 
-                              else expr.alias_or_name for expr in parsed.expressions]
-                    return df[columns]
+                    if "==" in condition and "'" in condition:
+                        df = df.query(condition, engine='python')
+                    else:
+                        df = df.query(condition)
+            result_df = df if isinstance(parsed.expressions[0], exp.Star) else df[[
+                expr.this.this if isinstance(expr, exp.Column) 
+                else expr.alias_or_name for expr in parsed.expressions
+            ]]
+            
+            # Convert all numeric columns to objects to handle NaN
+            for col in result_df.select_dtypes(include=['float64', 'int64']).columns:
+                result_df[col] = result_df[col].astype(object).where(result_df[col].notna(), None)
+            
+            # Convert string columns
+            for col in result_df.select_dtypes(include=['object']).columns:
+                result_df[col] = result_df[col].where(result_df[col].notna(), None)
+            
+            return result_df
 
         except Exception as error:
             print(f'Error selecting data: {error}')
             raise
 
-    async def delete_row(self, sql_statement: str, current_database: str) -> None:
+    async def delete_row(self, sql_statement: str, current_database: str = 'csvgres') -> None:
         """Delete a row from a table"""
         try:
             # if current_database is None:

@@ -11,7 +11,7 @@ class TableOperations:
         self.base_dir = base_dir
         self.parser = SqlParser()
 
-    async def create_table(self, sql_statement: str, current_database: str) -> None:
+    async def create_table(self, sql_statement: str, current_database: str = 'csvgres') -> None:
         """Create a new table from CREATE TABLE statement"""
         try:
             # if current_database is None:
@@ -22,7 +22,6 @@ class TableOperations:
                 raise ValueError('Invalid CREATE TABLE statement')
 
             table_name = parsed.args['this'].this.this
-            print(current_database)
             database_path = os.path.join(self.base_dir, current_database)
             metadata_path = os.path.join(database_path, '.metadata')
             data_path = os.path.join(database_path, 'tables')
@@ -44,7 +43,7 @@ class TableOperations:
             
             for col in columns:
                 col_meta = {
-                    'type': col.type
+                    'type': str(col.type)
                 }
                 
                 if col.is_serial:
@@ -61,7 +60,7 @@ class TableOperations:
                     col_meta['unique'] = True
                     
                 if col.default is not None and not col.is_serial:
-                    col_meta['default'] = col.default
+                    col_meta['default'] = str(col.default) if hasattr(col.default, 'sql') else col.default
                     
                 metadata['columns'][col.name] = col_meta
             
@@ -90,7 +89,7 @@ class TableOperations:
             table_name = parsed.args['this'].this.this
             data_path = os.path.join(self.base_dir, current_database, 'tables')
             metadata_path = os.path.join(self.base_dir, current_database, '.metadata')
-            
+
             file_path = os.path.join(data_path, f'{table_name}.csv')
             meta_path = os.path.join(metadata_path, f'{table_name}.json')
 

@@ -28,19 +28,19 @@ class Csvgres:
         await self.db_ops.drop_database(sql_statement, self.current_database)
 
     async def create_table(self, sql_statement: str) -> None:
-        await self.table_ops.create_table(sql_statement, self.current_database)
+        await self.table_ops.create_table(sql_statement, 'csvgres')
 
     async def drop_table(self, sql_statement: str) -> None:
-        await self.table_ops.drop_table(sql_statement, self.current_database)
+        await self.table_ops.drop_table(sql_statement, 'csvgres')
 
-    async def insert(self, sql_statement: str) -> None:
-        await self.data_ops.insert(sql_statement, self.current_database)
+    async def insert(self, sql_statement: str, database_name: str = 'csvgres') -> None:
+        await self.data_ops.insert(sql_statement, database_name)
 
-    async def select(self, sql_statement: str) -> pd.DataFrame:
-        return await self.data_ops.select(sql_statement, self.current_database)
+    async def select(self, sql_statement: str, database_name: str = 'csvgres') -> pd.DataFrame:
+        return await self.data_ops.select(sql_statement, database_name)
 
-    async def delete_row(self, sql_statement: str) -> None:
-        await self.data_ops.delete_row(sql_statement, self.current_database)
+    async def delete_row(self, sql_statement: str, database_name: str = 'csvgres') -> None:
+        await self.data_ops.delete_row(sql_statement, database_name)
 
     # async def update_row(self, sql_statement: str) -> None:
     #     await self.data_ops.update_row(sql_statement, self.current_database)

@@ -22,6 +22,9 @@ def require_auth(f):
                 status_code=401,
                 detail="Unauthorized"
             )
+        
+        # Attach the auth data to the request object
+        request.state.auth = auth_data
                 
         return await f(*args, **kwargs)
     return decorated_function

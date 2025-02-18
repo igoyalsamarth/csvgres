@@ -8,15 +8,17 @@ class SqlParser:
         if isinstance(where_expr, exp.Where):
             return self.parse_where_expression(where_expr.this)
         elif isinstance(where_expr, exp.EQ):
-            # Handle string literals by adding quotes
+            # Handle string literals by adding quotes and making case-insensitive
             expr_value = where_expr.expression.this
             if isinstance(where_expr.expression, exp.Literal) and where_expr.expression.is_string:
-                expr_value = f"'{expr_value}'"
+                # Convert both sides to lowercase for case-insensitive comparison
+                return f"{where_expr.this.this}.str.lower() == '{expr_value.lower()}'"
             return f"{where_expr.this.this} == {expr_value}"
         elif isinstance(where_expr, exp.NEQ):
             expr_value = where_expr.expression.this
             if isinstance(where_expr.expression, exp.Literal) and where_expr.expression.is_string:
-                expr_value = f"'{expr_value}'"
+                # Convert both sides to lowercase for case-insensitive comparison
+                return f"{where_expr.this.this}.str.lower() != '{expr_value.lower()}'"
             return f"{where_expr.this.this} != {expr_value}"
         elif isinstance(where_expr, exp.GT):
             return f"{where_expr.this.this} > {where_expr.expression.this}"

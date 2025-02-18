@@ -6,9 +6,9 @@ from dotenv import load_dotenv
 
 class UserAuth(TypedDict):
     user_id: str
-    is_signed_in: bool
-    
-class AuthService:
+    email: str
+
+class EmailService:
     def __init__(self):
         
         load_dotenv()
@@ -21,7 +21,7 @@ class AuthService:
 
     def verify_auth(self, request) -> Optional[UserAuth]:
         """
-        Verifies the authentication token and returns user information if valid
+        Verifies the authentication token and returns user's ID and email if valid
         """
         try:
             auth_header = request.headers.get('authorization')
@@ -29,7 +29,7 @@ class AuthService:
             if not auth_header or not auth_header.startswith('Bearer '):
                 print("Invalid or missing Bearer token")
                 return None
-                        
+            
             frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
             
             # Verify the request using Clerk
@@ -44,15 +44,19 @@ class AuthService:
                 print(f"User is not signed in. Reason: {request_state.reason}")
                 return None
 
-            # Get user details from Clerk
+            # Get user ID from the request state
             user_id = request_state.payload.get('sub')
-    
-            # Extract relevant user data from the payload
-            auth_data = UserAuth(
+            
+            # Get user's primary email
+            user = self.clerk.users.get(user_id=user_id)
+            primary_email_id = user.primary_email_address_id
+            email_data = self.clerk.email_addresses.get(email_address_id=primary_email_id)
+            
+            # Return only user_id and email
+            return UserAuth(
                 user_id=user_id,
-                is_signed_in=request_state.is_signed_in,
+                email=email_data.email_address if email_data else None
             )
-            return auth_data
 
         except Exception as e:
             print(f"Auth error: {str(e)}")
