@@ -13,4 +13,4 @@ async def list_projects_func(user_id: str) -> list:
         return []
 
     project_ids_str = "','".join(eval(project_ids))
-    return await csvgres.select(f"SELECT * FROM projects WHERE projectid IN ('{project_ids_str}')", getenv('DATABASE_NAME'))
+    return await csvgres.select(f"SELECT * FROM projects WHERE projectid IN ('{project_ids_str}') AND deletedat IS NULL", getenv('DATABASE_NAME'))

@@ -13,7 +13,7 @@ class DataOperations:
         self.parser = SqlParser()
         self.type_handler = TypeHandler()
 
-    async def insert(self, sql_statement: str, current_database: str = 'csvgres') -> None:
+    async def insert(self, sql_statement: str, current_database: str) -> None:
         """Insert data into table from INSERT statement"""
         try:
             parsed = sqlglot.parse_one(sql_statement)
@@ -123,7 +123,7 @@ class DataOperations:
             print(f'Error inserting data: {error}')
             raise
 
-    async def select(self, sql_statement: str, current_database: str = 'csvgres') -> pd.DataFrame:
+    async def select(self, sql_statement: str, current_database: str) -> pd.DataFrame:
         """Execute SELECT statement and return results"""
         try:
             parsed = sqlglot.parse_one(sql_statement)
@@ -142,27 +142,37 @@ class DataOperations:
                 df = await loop.run_in_executor(pool, pd.read_csv, file_path)  
                 if parsed.args.get('where'):
                     where_expr = parsed.args['where']
-                    if isinstance(where_expr.this, exp.In):
-                        # Handle IN operator
-                        column = where_expr.this.this.this.this
-                        values = [expr.this for expr in where_expr.this.expressions]
-                        # Create condition for IN clause
-                        condition = f"{column} in {values}"
+                    if isinstance(where_expr.this, exp.And):
+                        # Handle AND conditions separately
+                        conditions = []
+                        
+                        # Handle first condition (IN)
+                        if isinstance(where_expr.this.this, exp.In):
+                            column = where_expr.this.this.this.this.this
+                            values = [expr.this for expr in where_expr.this.this.expressions]
+                            conditions.append(f"{column} in {values}")
+                        
+                        # Handle second condition (IS NULL)
+                        if isinstance(where_expr.this.expression, exp.Is):
+                            column = where_expr.this.expression.this.this.this
+                            if isinstance(where_expr.this.expression.expression, exp.Null):
+                                conditions.append(f"{column}.isna()")
+                        
+                        # Combine conditions with &
+                        condition = ' & '.join(conditions)
                     else:
                         condition = self.parser.parse_where_expression(where_expr)
                     
-                    if "==" in condition and "'" in condition:
-                        df = df.query(condition, engine='python')
-                    else:
-                        df = df.query(condition)
-            result_df = df if isinstance(parsed.expressions[0], exp.Star) else df[[
+                    df = df.query(condition, engine='python')
+            result_df = df.copy() if isinstance(parsed.expressions[0], exp.Star) else df[[
                 expr.this.this if isinstance(expr, exp.Column) 
                 else expr.alias_or_name for expr in parsed.expressions
-            ]]
+            ]].copy()
             
             # Convert all numeric columns to objects to handle NaN
             for col in result_df.select_dtypes(include=['float64', 'int64']).columns:
-                result_df[col] = result_df[col].astype(object).where(result_df[col].notna(), None)
+                result_df = result_df.astype({col: 'object'})  # Convert using astype with dictionary
+                result_df.loc[:, col] = result_df[col].where(result_df[col].notna(), None)
             
             # Convert string columns
             for col in result_df.select_dtypes(include=['object']).columns:
@@ -176,7 +186,7 @@ class DataOperations:
             print(f'Error selecting data: {error}')
             raise
 
-    async def update_row(self, sql_statement: str, current_database: str = 'csvgres') -> None:
+    async def update_row(self, sql_statement: str, current_database: str) -> None:
         """Update data in table from UPDATE statement"""
         try:
             parsed = sqlglot.parse_one(sql_statement)
@@ -227,6 +237,23 @@ class DataOperations:
                                     return f'["{new_val}"]'
                             
                             df.loc[mask, col_name] = df.loc[mask, col_name].apply(update_array)
+                    elif isinstance(expr.expression, exp.Sub):  # Handle subtraction (-)
+                        if columns_meta[col_name]['type'] == 'ARRAY':
+                            value_to_remove = expr.expression.expression.this.strip('{}')
+                            
+                            def remove_from_array(x):
+                                try:
+                                    current_array = eval(x) if pd.notna(x) and x != '[]' else []
+                                    if not isinstance(current_array, list):
+                                        current_array = []
+                                    # Remove value from array if it exists
+                                    if value_to_remove in current_array:
+                                        current_array.remove(value_to_remove)
+                                    return str(current_array)
+                                except:
+                                    return '[]'
+                            
+                            df.loc[mask, col_name] = df.loc[mask, col_name].apply(remove_from_array)
                     else:  # Handle normal updates
                         new_val = expr.expression.this
                         df.loc[mask, col_name] = new_val
@@ -237,7 +264,7 @@ class DataOperations:
             print(f'Error updating data: {error}')
             raise
 
-    async def delete_row(self, sql_statement: str, current_database: str = 'csvgres') -> None:
+    async def delete_row(self, sql_statement: str, current_database: str) -> None:
         """Delete a row from a table"""
         try:
             # if current_database is None:
