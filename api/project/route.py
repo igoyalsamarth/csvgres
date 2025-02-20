@@ -3,7 +3,7 @@ from decorators.auth_decorator import require_auth
 from .function import create_project_func
 
 # Create router for projects with a prefix
-project_router = APIRouter(prefix="/projects")
+project_router = APIRouter(prefix="/project")
 
 @project_router.post("")
 @require_auth

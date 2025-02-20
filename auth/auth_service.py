@@ -1,7 +1,7 @@
 import os
 from typing import Optional, TypedDict
 from clerk_backend_api import Clerk
-from clerk_backend_api.jwks_helpers import authenticate_request, AuthenticateRequestOptions
+from clerk_backend_api.jwks_helpers import AuthenticateRequestOptions
 from dotenv import load_dotenv
 
 class UserAuth(TypedDict):

@@ -12,3 +12,4 @@ class ColumnDefinition:
     default: Optional[Any] = None
     initial_counter_value: Optional[int] = 1
     auto_increment_counter: Optional[int] = 1  # For SERIAL columns
+    array_subtype: str = None

@@ -50,8 +50,7 @@ class DataOperations:
                         raise ValueError(f"Column '{col}' does not exist in table '{table_name}'")
             else:
                 insert_columns = list(columns_meta.keys())
-            # Initialize dictionary with all columns
-# Ensure correct column mapping
+
             df_dict = {col: [] for col in columns_meta.keys()}  # Initialize all columns
 
             for row in values_data:
@@ -79,7 +78,10 @@ class DataOperations:
                         col_meta['default'], 
                         col_meta['type']
                     )
-                    new_rows[col_name] = new_rows[col_name].fillna(default_value)
+                    if col_meta['type'] == 'ARRAY' and isinstance(default_value, list):
+                        new_rows[col_name] = new_rows[col_name].apply(lambda x: default_value if pd.isna(x) else x)
+                    else:
+                        new_rows[col_name] = new_rows[col_name].fillna(default_value)
 
             # Type validation
             for col_name, col_meta in columns_meta.items():
@@ -139,7 +141,16 @@ class DataOperations:
             with ThreadPoolExecutor() as pool:
                 df = await loop.run_in_executor(pool, pd.read_csv, file_path)  
                 if parsed.args.get('where'):
-                    condition = self.parser.parse_where_expression(parsed.args['where'])
+                    where_expr = parsed.args['where']
+                    if isinstance(where_expr.this, exp.In):
+                        # Handle IN operator
+                        column = where_expr.this.this.this.this
+                        values = [expr.this for expr in where_expr.this.expressions]
+                        # Create condition for IN clause
+                        condition = f"{column} in {values}"
+                    else:
+                        condition = self.parser.parse_where_expression(where_expr)
+                    
                     if "==" in condition and "'" in condition:
                         df = df.query(condition, engine='python')
                     else:
@@ -155,12 +166,75 @@ class DataOperations:
             
             # Convert string columns
             for col in result_df.select_dtypes(include=['object']).columns:
-                result_df[col] = result_df[col].where(result_df[col].notna(), None)
+                result_df.loc[:, col] = result_df[col].where(result_df[col].notna(), None)
             
-            return result_df
+            # Convert DataFrame to list of dictionaries with proper structure
+            result = result_df.to_dict(orient='records')
+            return result
 
         except Exception as error:
             print(f'Error selecting data: {error}')
+            raise
+
+    async def update_row(self, sql_statement: str, current_database: str = 'csvgres') -> None:
+        """Update data in table from UPDATE statement"""
+        try:
+            parsed = sqlglot.parse_one(sql_statement)
+            if not isinstance(parsed, exp.Update):
+                raise ValueError('Invalid UPDATE statement')
+            
+            table_name = parsed.args['this'].this.this
+            file_path = os.path.join(self.base_dir, current_database, 'tables', f'{table_name}.csv')
+            meta_path = os.path.join(self.base_dir, current_database, '.metadata', f'{table_name}.json')
+
+            if not os.path.exists(file_path):
+                raise ValueError(f'Table {table_name} does not exist')
+            
+            # Load metadata for type checking
+            metadata = await self._load_metadata(meta_path)
+            columns_meta = metadata['columns']
+            
+            loop = asyncio.get_event_loop()
+            with ThreadPoolExecutor() as pool:
+                df = await loop.run_in_executor(pool, pd.read_csv, file_path)
+                
+                # Create update mask
+                if parsed.args.get('where'):
+                    condition = self.parser.parse_where_expression(parsed.args['where'])
+                    mask = df.eval(condition)
+                else:
+                    mask = pd.Series([True] * len(df))
+                
+                # Apply updates for each SET expression
+                for expr in parsed.args['expressions']:
+                    col_name = expr.this.this.this
+                    
+                    if isinstance(expr.expression, exp.DPipe):  # Handle concatenation (||)
+                        if columns_meta[col_name]['type'] == 'ARRAY':
+                            new_val = expr.expression.expression.this.strip('{}')
+                            
+                            def update_array(x):
+                                try:
+                                    # Convert string representation to actual array
+                                    current_array = eval(x) if pd.notna(x) and x != '[]' else []
+                                    if not isinstance(current_array, list):
+                                        current_array = []
+                                    # Add new value to array
+                                    if new_val not in current_array:
+                                        current_array.append(new_val)
+                                    return str(current_array)
+                                except:
+                                    return f'["{new_val}"]'
+                            
+                            df.loc[mask, col_name] = df.loc[mask, col_name].apply(update_array)
+                    else:  # Handle normal updates
+                        new_val = expr.expression.this
+                        df.loc[mask, col_name] = new_val
+                
+                await loop.run_in_executor(pool, lambda: df.to_csv(file_path, index=False))
+
+        except Exception as error:
+            print(f'Error updating data: {error}')
             raise
 
     async def delete_row(self, sql_statement: str, current_database: str = 'csvgres') -> None:

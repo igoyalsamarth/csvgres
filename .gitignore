@@ -31,3 +31,5 @@ htmlcov/
 
 # Your project's test data directory
 test_data/
+
+.vscode/

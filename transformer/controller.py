@@ -36,6 +36,9 @@ class Csvgres:
     async def insert(self, sql_statement: str, database_name: str = 'csvgres') -> None:
         await self.data_ops.insert(sql_statement, database_name)
 
+    async def update_row(self, sql_statement: str, database_name: str = 'csvgres') -> None:
+        await self.data_ops.update_row(sql_statement, database_name)
+
     async def select(self, sql_statement: str, database_name: str = 'csvgres') -> pd.DataFrame:
         return await self.data_ops.select(sql_statement, database_name)
 

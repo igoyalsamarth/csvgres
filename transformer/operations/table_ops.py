@@ -61,7 +61,12 @@ class TableOperations:
                     
                 if col.default is not None and not col.is_serial:
                     col_meta['default'] = str(col.default) if hasattr(col.default, 'sql') else col.default
-                    
+                
+                if str(col.type) == 'ARRAY' and hasattr(col, 'array_subtype'):
+                    col_meta['array_type'] = col.array_subtype
+                    if col.default is None:
+                        col_meta['default'] = []
+                
                 metadata['columns'][col.name] = col_meta
             
             loop = asyncio.get_event_loop()

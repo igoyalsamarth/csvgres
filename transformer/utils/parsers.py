@@ -70,27 +70,34 @@ class SqlParser:
                 ))
                 continue
 
+            # Initialize other properties
+            not_null = False
+            unique = False
+            default = None
+            array_subtype = None
+
             # Handle regular data types
-            if isinstance(col.kind.this, exp.DataType):
-                raw_type = str(col.kind.this).upper()
-                if raw_type.startswith('TYPE.'):
-                    raw_type = raw_type[5:]
-                data_type = raw_type
+            if isinstance(col.kind, exp.DataType):
+                data_type = str(col.kind.this).upper()
+                if data_type.startswith('TYPE.'):
+                    data_type = data_type[5:]
+                
+                # Handle ARRAY type specifically
+                if data_type == 'ARRAY' and hasattr(col.kind, 'expressions'):
+                    array_subtype = str(col.kind.expressions[0].this).upper()
+                    if array_subtype.startswith('TYPE.'):
+                        array_subtype = array_subtype[5:]
+                
                 # Add size specification if present
-                if hasattr(col.kind, 'expressions') and col.kind.expressions:
+                elif hasattr(col.kind, 'expressions') and col.kind.expressions:
                     size = col.kind.expressions[0].this
                     data_type = f"{data_type}({size})"
             else:
                 data_type = str(col.kind.this).upper()
                 if data_type.startswith('TYPE.'):
                     data_type = data_type[5:]
-            
-            # Initialize other properties
-            not_null = False
-            unique = False
-            default = None
 
-            # Process remaining constraints
+            # Process constraints
             if hasattr(col, 'constraints') and col.constraints:
                 for constraint in col.constraints:
                     if isinstance(constraint.kind, exp.NotNullColumnConstraint):
@@ -100,29 +107,45 @@ class SqlParser:
                     elif isinstance(constraint.kind, exp.DefaultColumnConstraint):
                         if isinstance(constraint.kind.this, exp.CurrentTimestamp):
                             default = "CURRENT_TIMESTAMP"
+                        elif isinstance(constraint.kind.this, exp.Null):
+                            default = "NULL"
+                            not_null = False
+                        elif isinstance(constraint.kind.this, exp.Cast):
+                            # Handle array defaults
+                            if str(constraint.kind.this.to.this).upper() == 'ARRAY':
+                                default = []
+                        elif isinstance(constraint.kind.this, exp.Array):
+                            default = []
                         else:
                             default = constraint.kind.this.this if hasattr(constraint.kind.this, 'this') else constraint.kind.this
 
             # For primary key columns that aren't SERIAL
             if primary_key:
-                not_null = True  # Implied by primary key
-                unique = False   # Implied by primary key
+                not_null = True
+                unique = False
 
-            # Create the column definition with only necessary fields
+            # Build column arguments
             column_args = {
                 'name': name,
                 'type': data_type,
                 'is_serial': False
             }
 
+            # Add array subtype if it's an array
+            if data_type == 'ARRAY' and array_subtype:
+                column_args['array_subtype'] = array_subtype
+                if default is None:
+                    default = []
+                column_args['default'] = default
+
             # Only add non-default constraints
             if primary_key:
                 column_args['primary_key'] = True
-            if not_null and not primary_key:  # Don't include if primary key already implies it
+            if not_null and not primary_key:
                 column_args['not_null'] = True
-            if unique:  # Will only be True if not primary key
+            if unique:
                 column_args['unique'] = True
-            if default is not None:
+            if default is not None and not column_args.get('is_serial'):
                 column_args['default'] = default
 
             columns.append(ColumnDefinition(**column_args))
