@@ -2,10 +2,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from datetime import datetime
-from utils.csv_database import CsvDatabase
+from transformer.controller import Csvgres
+from api.router import get_routers
 
 app = FastAPI(title="CSV Database API")
-csv_db = CsvDatabase()
+csv_db = Csvgres()
 
 # Add CORS middleware
 app.add_middleware(
@@ -110,8 +111,16 @@ async def execute_query(request: QueryRequest):
             detail=str(error)
         )
 
+# Include all routers from the API
+for router in get_routers():
+    app.include_router(router)
+    
+# Add this debug print
+for route in app.routes:
+    print(f"Registered route: {route.path}")
+
 if __name__ == "__main__":
     import uvicorn
     HOST = "0.0.0.0"
-    PORT = 3000
+    PORT = 8000
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")

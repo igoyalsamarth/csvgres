@@ -1,11 +1,11 @@
 data
-csvgres
 __pycache_/
 .csvgres/
 csvdb-env/
 __pycache__/
 *.pyc
 .DS_Store
+.env.*
 .env
 
 # Python package build artifacts
@@ -31,3 +31,5 @@ htmlcov/
 
 # Your project's test data directory
 test_data/
+
+.vscode/
