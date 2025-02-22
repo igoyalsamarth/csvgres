@@ -13,6 +13,7 @@ class DatabaseOperations:
         """Create a new database from CREATE DATABASE statement"""
         try:
             parsed = sqlglot.parse_one(sql_statement)
+            print(parsed)
 
             if not isinstance(parsed, exp.Create) or parsed.args.get('kind') != 'DATABASE':
                 raise ValueError('Invalid CREATE DATABASE statement')
@@ -25,8 +26,17 @@ class DatabaseOperations:
 
             loop = asyncio.get_event_loop()
             with ThreadPoolExecutor() as pool:
-                await loop.run_in_executor(pool, lambda: os.makedirs(database_path, mode=0o755))
-                await loop.run_in_executor(pool, lambda: os.chmod(self.base_dir, 0o755))
+                # Create database directory structure
+                dirs_to_create = [
+                    database_path,
+                    os.path.join(database_path, '.metadata'), 
+                    os.path.join(database_path, 'tables')
+                ]
+                
+                for dir_path in dirs_to_create:
+                    await loop.run_in_executor(pool, lambda: os.makedirs(dir_path, mode=0o755))
+                
+                await loop.run_in_executor(pool, lambda: os.chmod(database_path, 0o755))
             
             return database_name
         

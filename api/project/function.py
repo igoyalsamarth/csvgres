@@ -1,10 +1,10 @@
 import time
+from utils.database import get_db
 from utils.random_word.random_word_generator import get_random_word
-from transformer.controller import Csvgres
 from os import getenv
 
 async def create_project_func(user_id: str, project_data: dict) -> None:
-    csvgres = Csvgres()
+    csvgres = get_db()
     project_id = get_random_word() + '-' + get_random_word() + '-' + str(int(time.time()))[-8:]
     project_name = project_data.get('name')
     
@@ -15,6 +15,6 @@ async def create_project_func(user_id: str, project_data: dict) -> None:
     await csvgres.update_row(f"UPDATE users SET projects = projects || '{project_id}' WHERE userid = '{user_id}'", getenv('DATABASE_NAME'))
 
 async def delete_project_func(user_id: str, project_id: str) -> None:
-    csvgres = Csvgres()
+    csvgres = get_db()
     await csvgres.update_row(f"UPDATE projects SET deletedat = '{time.strftime('%Y-%m-%dT%H:%M:%S')}' WHERE projectid = '{project_id}'", getenv('DATABASE_NAME'))
     await csvgres.update_row(f"UPDATE users SET projects = projects - '{project_id}' WHERE userid = '{user_id}'", getenv('DATABASE_NAME'))

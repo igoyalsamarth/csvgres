@@ -160,6 +160,11 @@ class DataOperations:
                         
                         # Combine conditions with &
                         condition = ' & '.join(conditions)
+                    elif isinstance(where_expr.this, exp.In):
+                        # Handle standalone IN condition
+                        column = where_expr.this.this.this.this
+                        values = [expr.this for expr in where_expr.this.expressions]
+                        condition = f"{column} in {values}"
                     else:
                         condition = self.parser.parse_where_expression(where_expr)
                     
