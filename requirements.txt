@@ -21,3 +21,5 @@ typing
 
 # Auth
 clerk-backend-api
+
+shortuuid
