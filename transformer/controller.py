@@ -9,7 +9,6 @@ class Csvgres:
         self.base_dir = data_directory
         self.current_database = None
         
-        # Initialize operation classes
         self.db_ops = DatabaseOperations(self.base_dir)
         self.table_ops = TableOperations(self.base_dir)
         self.data_ops = DataOperations(self.base_dir)

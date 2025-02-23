@@ -49,13 +49,6 @@ async def execute_query(request: QueryRequest):
                 "success": True,
                 "message": "Database created successfully"
             }
-        
-        elif any(cmd in query for cmd in [r'\c', r'\connect', 'c ', 'connect ']):
-            await csv_db.connect_database(query)
-            return {
-                "success": True,
-                "message": "Database connected successfully"
-            }
 
         elif "create table" in query:
             await csv_db.create_table(query)

@@ -2,6 +2,8 @@ from functools import wraps
 from fastapi import HTTPException, Request
 from auth.auth_service import AuthService
 
+_auth_service = AuthService()
+
 def require_auth(f):
     @wraps(f)
     async def decorated_function(*args, **kwargs):
@@ -13,8 +15,7 @@ def require_auth(f):
                 detail="Request object not found in function arguments"
             )
             
-        auth_service = AuthService()
-        auth_data = auth_service.verify_auth(request)
+        auth_data = _auth_service.verify_auth(request)
         
         if not auth_data:
             raise HTTPException(

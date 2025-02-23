@@ -1,9 +1,9 @@
-from transformer.controller import Csvgres
+from utils.database import get_db
 from os import getenv
 
 async def list_projects_func(user_id: str) -> list:
-    csvgres = Csvgres()
-    # Get user's projects from users table
+    csvgres = get_db()
+    
     user_data = await csvgres.select(f"SELECT projects FROM users WHERE userid = '{user_id}'", getenv('DATABASE_NAME'))
     if not user_data:
         return []
@@ -13,4 +13,10 @@ async def list_projects_func(user_id: str) -> list:
         return []
 
     project_ids_str = "','".join(eval(project_ids))
-    return await csvgres.select(f"SELECT * FROM projects WHERE projectid IN ('{project_ids_str}') AND deletedat IS NULL", getenv('DATABASE_NAME'))
+    projects = await csvgres.select(f"SELECT * FROM projects WHERE projectid IN ('{project_ids_str}') AND deletedat IS NULL", getenv('DATABASE_NAME'))
+    if projects:
+        for project in projects:
+            del project['deletedat']
+            del project['database']
+        return projects
+    return []

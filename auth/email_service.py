@@ -32,7 +32,6 @@ class EmailService:
             
             frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
             
-            # Verify the request using Clerk
             request_state = self.clerk.authenticate_request(
                 request,
                 AuthenticateRequestOptions(
@@ -44,15 +43,12 @@ class EmailService:
                 print(f"User is not signed in. Reason: {request_state.reason}")
                 return None
 
-            # Get user ID from the request state
             user_id = request_state.payload.get('sub')
             
-            # Get user's primary email
             user = self.clerk.users.get(user_id=user_id)
             primary_email_id = user.primary_email_address_id
             email_data = self.clerk.email_addresses.get(email_address_id=primary_email_id)
             
-            # Return only user_id and email
             return UserAuth(
                 user_id=user_id,
                 email=email_data.email_address if email_data else None
