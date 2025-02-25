@@ -966,7 +966,6 @@ birth
 birthday
 bishop
 bit
-bitch
 bite
 bits
 biz
@@ -4915,8 +4914,6 @@ kingdom
 kings
 kingston
 kirk
-kiss
-kissing
 kit
 kitchen
 kits

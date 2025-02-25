@@ -127,6 +127,7 @@ class DataOperations:
         """Execute SELECT statement and return results"""
         try:
             parsed = sqlglot.parse_one(sql_statement)
+
             if not isinstance(parsed, exp.Select):
                 raise ValueError('Invalid SELECT statement')
 
@@ -142,32 +143,7 @@ class DataOperations:
                 df = await loop.run_in_executor(pool, pd.read_csv, file_path)  
                 if parsed.args.get('where'):
                     where_expr = parsed.args['where']
-                    if isinstance(where_expr.this, exp.And):
-                        # Handle AND conditions separately
-                        conditions = []
-                        
-                        # Handle first condition (IN)
-                        if isinstance(where_expr.this.this, exp.In):
-                            column = where_expr.this.this.this.this.this
-                            values = [expr.this for expr in where_expr.this.this.expressions]
-                            conditions.append(f"{column} in {values}")
-                        
-                        # Handle second condition (IS NULL)
-                        if isinstance(where_expr.this.expression, exp.Is):
-                            column = where_expr.this.expression.this.this.this
-                            if isinstance(where_expr.this.expression.expression, exp.Null):
-                                conditions.append(f"{column}.isna()")
-                        
-                        # Combine conditions with &
-                        condition = ' & '.join(conditions)
-                    elif isinstance(where_expr.this, exp.In):
-                        # Handle standalone IN condition
-                        column = where_expr.this.this.this.this
-                        values = [expr.this for expr in where_expr.this.expressions]
-                        condition = f"{column} in {values}"
-                    else:
-                        condition = self.parser.parse_where_expression(where_expr)
-                    
+                    condition = self.parser.parse_where_expression(where_expr)
                     df = df.query(condition, engine='python')
             result_df = df.copy() if isinstance(parsed.expressions[0], exp.Star) else df[[
                 expr.this.this if isinstance(expr, exp.Column) 
