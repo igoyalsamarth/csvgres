@@ -13,7 +13,7 @@ async def get_project_func(project_id: str) -> dict:
         
         if project_ids_for_db:
             db_ids_str = "','".join(project_ids_for_db)
-            all_databases = await csvgres.select(f"SELECT database_id, storage, compute, data_transfer FROM databases WHERE database_id IN ('{db_ids_str}') AND deleted_at IS NULL", getenv('DATABASE_NAME'))
+            all_databases = await csvgres.select(f"SELECT database_id, database_name, storage, compute, data_transfer FROM databases WHERE database_id IN ('{db_ids_str}') AND deleted_at IS NULL", getenv('DATABASE_NAME'))
         else:
             all_databases = []
 
