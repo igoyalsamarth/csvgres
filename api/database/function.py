@@ -35,3 +35,8 @@ async def delete_database_func(project_id: str, database_id: str) -> dict:
     await csvgres.delete_row(f"DELETE FROM databases WHERE database_id = '{database_id}'", getenv('DATABASE_NAME'))
     await csvgres.update_row(f"UPDATE projects SET database = database - '{database_id}' WHERE projectid = '{project_id}'", getenv('DATABASE_NAME'))
     return {"message": "Database deleted successfully"}
+
+async def update_database_func(database_id: str, database_body: dict) -> dict:
+    csvgres = get_db()
+    await csvgres.update_row(f"UPDATE databases SET database_name = '{database_body['name']}' WHERE database_id = '{database_id}'", getenv('DATABASE_NAME'))
+    return {"message": "Database updated successfully"}

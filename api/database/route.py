@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request
 from decorators.auth_decorator import require_auth
-from .function import create_database_func, delete_database_func
+from .function import create_database_func, delete_database_func, update_database_func
 
 database_router = APIRouter(prefix="/database")
 
@@ -15,3 +15,8 @@ async def create_database(request: Request, project_id: str):
 async def delete_database(request: Request, project_id: str, database_id: str):
     return await delete_database_func( project_id, database_id)
 
+@database_router.post("/rename/{database_id}")
+@require_auth
+async def rename_database(request: Request, database_id: str):
+    database_body = await request.json()
+    return await update_database_func(database_id, database_body)
