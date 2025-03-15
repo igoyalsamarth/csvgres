@@ -1,9 +1,14 @@
 from fastapi import APIRouter, Request
 from decorators.auth_decorator import require_auth
-from .function import create_project_func, delete_project_func
+from .function import create_project_func, delete_project_func, get_project_func
 
 # Create router for projects with a prefix
 project_router = APIRouter(prefix="/project")
+
+@project_router.get("/{project_id}")
+@require_auth
+async def get_project(request: Request, project_id: str):
+    return await get_project_func(project_id)
 
 @project_router.post("")
 @require_auth

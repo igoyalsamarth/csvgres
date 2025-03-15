@@ -1,6 +1,8 @@
 from utils.database import get_db
 from os import getenv
 import uuid as uuid4
+import time
+import shortuuid
 
 async def create_database_func(project_id: str, database_name: str) -> dict:
     csvgres = get_db()
@@ -18,6 +20,11 @@ async def create_database_func(project_id: str, database_name: str) -> dict:
     await csvgres.create_database(f"CREATE DATABASE {database_name['name']}")
     await csvgres.insert(f"INSERT INTO databases (database_id, database_name) VALUES ('{database_id}', '{database_name['name']}')", getenv('DATABASE_NAME'))
     await csvgres.update_row(f"UPDATE projects SET database = database || '{database_id}' WHERE projectid = '{project_id}'", getenv('DATABASE_NAME'))
+    proj_role_exists = await csvgres.select(f"SELECT projroleid FROM proj_role WHERE projectid = '{project_id}'", getenv('DATABASE_NAME'))
+    if not proj_role_exists:
+        proj_role_id = str(int(time.time()))
+        password = shortuuid.ShortUUID().random(length=12)
+        await csvgres.insert(f"INSERT INTO proj_role (projroleid, projectid, projectrolename, password) VALUES ('{proj_role_id}', '{project_id}', '{database_name['name']}_owner', '{password}')", getenv('DATABASE_NAME'))
 
 async def delete_database_func(project_id: str, database_id: str) -> dict:
     csvgres = get_db()

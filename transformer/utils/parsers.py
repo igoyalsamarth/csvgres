@@ -7,18 +7,33 @@ class SqlParser:
         """Convert sqlglot WHERE expression to pandas query syntax"""
         if isinstance(where_expr, exp.Where):
             return self.parse_where_expression(where_expr.this)
+        elif isinstance(where_expr, exp.And):
+            # Recursively parse both sides of the AND
+            left = self.parse_where_expression(where_expr.this)
+            right = self.parse_where_expression(where_expr.expression)
+            return f"({left}) & ({right})"
+        elif isinstance(where_expr, exp.In):
+            column = where_expr.this.this
+            values = [f"'{expr.this}'" if expr.is_string else expr.this 
+                     for expr in where_expr.expressions]
+            return f"{column} in [{', '.join(values)}]"
+        elif isinstance(where_expr, exp.Is):
+            column = where_expr.this.this
+            if isinstance(where_expr.expression, exp.Null):
+                return f"{column}.isna()"
+            return f"not {column}.isna()"
         elif isinstance(where_expr, exp.EQ):
-            # Handle string literals by adding quotes and making case-insensitive
             expr_value = where_expr.expression.this
+            column = where_expr.this.this
             if isinstance(where_expr.expression, exp.Literal) and where_expr.expression.is_string:
-                # Convert both sides to lowercase for case-insensitive comparison
-                return f"{where_expr.this.this}.str.lower() == '{expr_value.lower()}'"
-            return f"{where_expr.this.this} == {expr_value}"
+                # Use `==` with proper string escaping
+                escaped_value = expr_value.replace("'", "\\'")
+                return f"`{column}` == '{escaped_value}'"
+            return f"`{column}` == {expr_value}"
         elif isinstance(where_expr, exp.NEQ):
             expr_value = where_expr.expression.this
             if isinstance(where_expr.expression, exp.Literal) and where_expr.expression.is_string:
-                # Convert both sides to lowercase for case-insensitive comparison
-                return f"{where_expr.this.this}.str.lower() != '{expr_value.lower()}'"
+                return f"{where_expr.this.this} != '{expr_value}'"
             return f"{where_expr.this.this} != {expr_value}"
         elif isinstance(where_expr, exp.GT):
             return f"{where_expr.this.this} > {where_expr.expression.this}"
