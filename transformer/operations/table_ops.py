@@ -43,9 +43,9 @@ class TableOperations:
             
             for col in columns:
                 col_meta = {
-                    'type': str(col.type)
+                    'type': str(col.type)  # This might be where we're losing information
                 }
-                
+
                 if col.is_serial:
                     col_meta['is_serial'] = True
                     col_meta['initial_counter_value'] = col.initial_counter_value or 1

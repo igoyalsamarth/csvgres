@@ -42,6 +42,7 @@ class DataOperations:
                     row = [val.this if isinstance(val, exp.Literal) else val.this.this 
                           for val in tuple_expr.expressions]
                     values_data.append(row)
+
             # Get the columns from the INSERT statement or use all columns
             if parsed.args['this'].expressions:
                 insert_columns = [col.this for col in parsed.args['this'].expressions]
@@ -51,22 +52,47 @@ class DataOperations:
             else:
                 insert_columns = list(columns_meta.keys())
 
-            df_dict = {col: [] for col in columns_meta.keys()}  # Initialize all columns
+            # Initialize df_dict only with columns being inserted
+            df_dict = {col: [] for col in insert_columns}
 
+            # Map values to their columns
             for row in values_data:
-                row_dict = {col: None for col in columns_meta.keys()}  # Default None for all columns
-
-                # Map each column in insert_columns to its corresponding value in row
                 for i, col in enumerate(insert_columns):
-                    if i < len(row):  # Ensure we do not go out of index
-                        row_dict[col] = row[i]  
-
-                # Append mapped values correctly
-                for col in df_dict:
-                    df_dict[col].append(row_dict[col])
-
+                    if i < len(row):
+                        df_dict[col].append(row[i])
+                    else:
+                        df_dict[col].append(None)
 
             new_rows = pd.DataFrame(df_dict)
+
+            # Read existing data first to get the latest auto-increment value
+            loop = asyncio.get_event_loop()
+            with ThreadPoolExecutor() as pool:
+                existing_df = await loop.run_in_executor(pool, pd.read_csv, file_path)
+
+            # Add any missing columns from the table schema
+            for col in columns_meta.keys():
+                if col not in new_rows.columns:
+                    new_rows[col] = None
+
+            # Handle serial/auto-increment columns
+            for col_name, col_meta in columns_meta.items():
+                if col_meta.get('is_serial', False):
+                    null_mask = new_rows[col_name].isnull()
+                    if not existing_df.empty:
+                        last_id = int(existing_df[col_name].max())  # Convert to Python int
+                        new_rows.loc[null_mask, col_name] = range(
+                            last_id + 1,
+                            last_id + 1 + null_mask.sum()
+                        )
+                    else:
+                        new_rows.loc[null_mask, col_name] = range(
+                            1,
+                            1 + null_mask.sum()
+                        )
+                    # Update the auto_increment_counter in metadata
+                    if not new_rows[col_name].empty:
+                        col_meta['auto_increment_counter'] = int(new_rows[col_name].max()) + 1  # Convert to Python int
 
             for col_name, col_meta in columns_meta.items():
                 if col_meta.get('is_serial', False):
@@ -86,13 +112,56 @@ class DataOperations:
             # Type validation
             for col_name, col_meta in columns_meta.items():
                 if col_name in new_rows.columns:
-                    # Convert values according to their types
-                    try:
-                        new_rows[col_name] = new_rows[col_name].apply(
-                            lambda x: self.type_handler.parse_value_with_type(x, col_meta['type'])
-                        )
-                    except Exception as e:
-                        raise ValueError(f"Type validation failed for column '{col_name}': {str(e)}")
+                    # Handle VARCHAR type with length check
+                    if isinstance(col_meta['type'], str) and col_meta['type'].startswith('VARCHAR'):
+                        try:
+                            # Extract length from VARCHAR(n)
+                            length = int(col_meta['type'].strip('VARCHAR()'))
+                            
+                            def validate_varchar(x):
+                                if pd.isna(x):
+                                    return x
+                                # Convert to string if not already
+                                val = str(x)
+                                if len(val) > length:
+                                    raise ValueError(f"Value '{val}' exceeds maximum length of {length}")
+                                return val
+                            
+                            new_rows[col_name] = new_rows[col_name].apply(validate_varchar)
+                        except Exception as e:
+                            raise ValueError(f"Invalid VARCHAR value in column '{col_name}': {str(e)}")
+                    # Handle DECIMAL type with precision and scale
+                    elif isinstance(col_meta['type'], str) and col_meta['type'].startswith('DECIMAL'):
+                        try:
+                            # Extract precision and scale from DECIMAL(p) or DECIMAL(p,s)
+                            params = col_meta['type'].strip('DECIMAL()').split(',')
+                            precision = int(params[0])
+                            scale = int(params[1]) if len(params) > 1 else 0  # Default scale to 0 if not specified
+                            
+                            def validate_decimal(x):
+                                if pd.isna(x):
+                                    return x
+                                # Convert to float first to handle string inputs
+                                val = float(x)
+                                # Check total digits and decimal places
+                                str_val = f"{abs(val):.{scale}f}"
+                                int_part, dec_part = str_val.split('.')
+                                if len(int_part) + len(dec_part) > precision:
+                                    raise ValueError(f"Value {val} exceeds precision of {precision}")
+                                # Return string formatted with exact decimal places to preserve in CSV
+                                return f"{val:.{scale}f}"
+                            
+                            new_rows[col_name] = new_rows[col_name].apply(validate_decimal)
+                        except Exception as e:
+                            raise ValueError(f"Invalid DECIMAL value in column '{col_name}': {str(e)}")
+                    else:
+                        # Existing type validation for other types
+                        try:
+                            new_rows[col_name] = new_rows[col_name].apply(
+                                lambda x: self.type_handler.parse_value_with_type(x, col_meta['type'])
+                            )
+                        except Exception as e:
+                            raise ValueError(f"Type validation failed for column '{col_name}': {str(e)}")
 
             # Constraint validation
             for col_name, col_meta in columns_meta.items():
@@ -114,13 +183,45 @@ class DataOperations:
                         if duplicates.any():
                             raise ValueError(f"Duplicate value in {'primary key' if col_meta.get('primary_key', False) else 'unique'} column '{col_name}'")
                 
-                await asyncio.gather(
-                    loop.run_in_executor(pool, lambda: combined_df.to_csv(file_path, index=False)),
-                    loop.run_in_executor(pool, lambda: self._save_metadata(meta_path, metadata))
-                )
+                # Save data and metadata properly with await
+                await loop.run_in_executor(pool, lambda: combined_df.to_csv(file_path, index=False))
+                await self._save_metadata(meta_path, metadata)
 
         except Exception as error:
             print(f'Error inserting data: {error}')
+            raise
+
+    async def _handle_join(self, join, df, current_database, executor, loop):
+        """Handle a single JOIN operation"""
+        try:
+            # Get join table name without alias
+            join_table = join.this.this.this if isinstance(join.this.this, exp.Table) else join.this.this.this
+            join_file_path = os.path.join(self.base_dir, current_database, 'tables', f'{join_table}.csv')
+            
+            if not os.path.exists(join_file_path):
+                raise ValueError(f'Table {join_table} does not exist')
+            
+            # Read joined table
+            join_df = await loop.run_in_executor(executor, pd.read_csv, join_file_path)
+            
+            # Extract join condition
+            if join.args.get('on'):
+                on_clause = join.args['on']
+                
+                # Get the actual column names from the identifiers
+                left_col = str(on_clause.this)  # Convert Identifier to string
+                right_col = str(on_clause.expression)  # Convert Identifier to string
+                
+                # Strip any table aliases from column names
+                left_col = left_col.split('.')[-1] if '.' in left_col else left_col
+                right_col = right_col.split('.')[-1] if '.' in right_col else right_col
+                
+                # Perform the join
+                return pd.merge(df, join_df, left_on=left_col, right_on=right_col, how='inner')
+            
+            return df
+        except Exception as e:
+            print(f"Join error: {e}")
             raise
 
     async def select(self, sql_statement: str, current_database: str) -> pd.DataFrame:
@@ -131,37 +232,66 @@ class DataOperations:
             if not isinstance(parsed, exp.Select):
                 raise ValueError('Invalid SELECT statement')
 
+            # Get the main table name without alias
             from_expr = parsed.args['from']
-            table_name = from_expr[0].this.this
-            file_path = os.path.join(self.base_dir, current_database, 'tables', f'{table_name}.csv')
+            if isinstance(from_expr[0].this, exp.Table):
+                main_table = from_expr[0].this.this
+            else:
+                main_table = from_expr[0].this.this.this
+            
+            main_file_path = os.path.join(self.base_dir, current_database, 'tables', f'{main_table}.csv')
+            
+            if not os.path.exists(main_file_path):
+                raise ValueError(f'Table {main_table} does not exist')
 
-            if not os.path.exists(file_path):
-                raise ValueError(f'Table {table_name} does not exist')
+            executor = ThreadPoolExecutor()
+            try:
+                loop = asyncio.get_event_loop()
+                df = await loop.run_in_executor(executor, pd.read_csv, main_file_path)
 
-            loop = asyncio.get_event_loop()
-            with ThreadPoolExecutor() as pool:
-                df = await loop.run_in_executor(pool, pd.read_csv, file_path)  
+                # Handle JOINs if present
+                if parsed.args.get('joins'):
+                    for join in parsed.args['joins']:
+                        df = await self._handle_join(join, df, current_database, executor, loop)
+
+                # Handle WHERE clause
                 if parsed.args.get('where'):
                     where_expr = parsed.args['where']
                     condition = self.parser.parse_where_expression(where_expr)
                     df = df.query(condition, engine='python')
-            result_df = df.copy() if isinstance(parsed.expressions[0], exp.Star) else df[[
-                expr.this.this if isinstance(expr, exp.Column) 
-                else expr.alias_or_name for expr in parsed.expressions
-            ]].copy()
-            
-            # Convert all numeric columns to objects to handle NaN
-            for col in result_df.select_dtypes(include=['float64', 'int64']).columns:
-                result_df = result_df.astype({col: 'object'})  # Convert using astype with dictionary
-                result_df.loc[:, col] = result_df[col].where(result_df[col].notna(), None)
-            
-            # Convert string columns
-            for col in result_df.select_dtypes(include=['object']).columns:
-                result_df.loc[:, col] = result_df[col].where(result_df[col].notna(), None)
-            
-            # Convert DataFrame to list of dictionaries with proper structure
-            result = result_df.to_dict(orient='records')
-            return result
+
+                # Select columns
+                if isinstance(parsed.expressions[0], exp.Star):
+                    result_df = df.copy()
+                else:
+                    selected_columns = []
+                    for expr in parsed.expressions:
+                        if isinstance(expr, exp.Column):
+                            # Handle column with table alias
+                            col_name = str(expr.this).split('.')[-1]  # Get the column name part
+                            selected_columns.append(col_name)
+                        else:
+                            selected_columns.append(expr.alias_or_name)
+                    result_df = df[selected_columns].copy()
+                
+                # Handle NULL values while preserving original decimal precision
+                for col in result_df.select_dtypes(include=['float64']).columns:
+                    result_df = result_df.astype({col: 'object'})
+                    result_df.loc[:, col] = result_df[col].where(result_df[col].notna(), None)
+                
+                # Handle other numeric types
+                for col in result_df.select_dtypes(include=['int64']).columns:
+                    result_df = result_df.astype({col: 'object'})
+                    result_df.loc[:, col] = result_df[col].where(result_df[col].notna(), None)
+                
+                # Handle string columns
+                for col in result_df.select_dtypes(include=['object']).columns:
+                    result_df.loc[:, col] = result_df[col].where(result_df[col].notna(), None)
+                
+                return result_df.to_dict(orient='records')
+
+            finally:
+                executor.shutdown(wait=False)
 
         except Exception as error:
             print(f'Error selecting data: {error}')
@@ -281,12 +411,68 @@ class DataOperations:
     async def _load_metadata(self, meta_path: str) -> dict:
         """Load metadata from JSON file"""
         import json
-        loop = asyncio.get_event_loop()
-        with ThreadPoolExecutor() as pool:
-            return await loop.run_in_executor(pool, lambda: json.load(open(meta_path, 'r')))
+        try:
+            loop = asyncio.get_event_loop()
+            with ThreadPoolExecutor() as pool:
+                with open(meta_path, 'r') as f:
+                    content = await loop.run_in_executor(pool, f.read)
+                
+                content = content.strip()
+                if not content:
+                    return {"columns": {}}
+                
+                try:
+                    return json.loads(content)
+                except json.JSONDecodeError:
+                    content = content.replace('\n', ' ').replace('\r', '')
+                    content = ' '.join(content.split())
+                    return json.loads(content)
+                    
+        except Exception as e:
+            return {"columns": {}}
 
-    def _save_metadata(self, meta_path: str, metadata: dict) -> None:
+    def _convert_to_json_serializable(self, obj):
+        """Convert numpy types to Python native types"""
+        import numpy as np
+        if isinstance(obj, dict):
+            return {k: self._convert_to_json_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._convert_to_json_serializable(v) for v in obj]
+        elif isinstance(obj, (np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64)):
+            return int(obj)
+        elif isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
+            return float(obj)
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
+        return obj
+
+    async def _save_metadata(self, meta_path: str, metadata: dict) -> None:
         """Save metadata to JSON file"""
         import json
-        with open(meta_path, 'w') as f:
-            json.dump(metadata, f, indent=2) 
+        try:
+            if not isinstance(metadata, dict):
+                metadata = {"columns": {}}
+            if "columns" not in metadata:
+                metadata["columns"] = {}
+
+            metadata = self._convert_to_json_serializable(metadata)
+
+            loop = asyncio.get_event_loop()
+            with ThreadPoolExecutor() as pool:
+                temp_path = f"{meta_path}.tmp"
+                
+                def safe_write():
+                    with open(temp_path, 'w', encoding='utf-8') as f:
+                        json.dump(metadata, f, indent=2, ensure_ascii=False)
+                
+                await loop.run_in_executor(pool, safe_write)
+                
+                with open(temp_path, 'r', encoding='utf-8') as f:
+                    json.load(f)  # Verify JSON validity
+                
+                os.replace(temp_path, meta_path)
+
+        except Exception as e:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            raise ValueError(f"Error saving metadata: {str(e)}") 

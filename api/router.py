@@ -8,12 +8,13 @@ from api.user.route import user_router
 from api.projects.route import projects_router
 from api.databases.route import databases_router
 from api.database.route import database_router
-
+from api.commercial.route import commercial_router
 v1_router.include_router(project_router)
 v1_router.include_router(user_router)
 v1_router.include_router(projects_router)
 v1_router.include_router(databases_router)
 v1_router.include_router(database_router)
+v1_router.include_router(commercial_router)
 
 routers: List[APIRouter] = [v1_router]
 

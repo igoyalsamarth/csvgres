@@ -103,10 +103,10 @@ class SqlParser:
                     if array_subtype.startswith('TYPE.'):
                         array_subtype = array_subtype[5:]
                 
-                # Add size specification if present
+                # Handle types with parameters (like DECIMAL, VARCHAR, etc.)
                 elif hasattr(col.kind, 'expressions') and col.kind.expressions:
-                    size = col.kind.expressions[0].this
-                    data_type = f"{data_type}({size})"
+                    params = [str(expr.this) for expr in col.kind.expressions]
+                    data_type = f"{data_type}({','.join(params)})"
             else:
                 data_type = str(col.kind.this).upper()
                 if data_type.startswith('TYPE.'):
