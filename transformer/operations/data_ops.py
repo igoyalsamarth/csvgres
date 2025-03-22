@@ -115,17 +115,25 @@ class DataOperations:
                     # Handle VARCHAR type with length check
                     if isinstance(col_meta['type'], str) and col_meta['type'].startswith('VARCHAR'):
                         try:
-                            # Extract length from VARCHAR(n)
-                            length = int(col_meta['type'].strip('VARCHAR()'))
-                            
                             def validate_varchar(x):
                                 if pd.isna(x):
                                     return x
                                 # Convert to string if not already
-                                val = str(x)
-                                if len(val) > length:
-                                    raise ValueError(f"Value '{val}' exceeds maximum length of {length}")
-                                return val
+                                return str(x)
+                            
+                            # Only check length if VARCHAR(n) is specified
+                            if '(' in col_meta['type']:
+                                # Extract length from VARCHAR(n)
+                                length = int(col_meta['type'].strip('VARCHAR()'))
+                                
+                                def validate_varchar(x):
+                                    if pd.isna(x):
+                                        return x
+                                    # Convert to string if not already
+                                    val = str(x)
+                                    if len(val) > length:
+                                        raise ValueError(f"Value '{val}' exceeds maximum length of {length}")
+                                    return val
                             
                             new_rows[col_name] = new_rows[col_name].apply(validate_varchar)
                         except Exception as e:
