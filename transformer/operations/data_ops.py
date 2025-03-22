@@ -457,6 +457,7 @@ class DataOperations:
     async def _save_metadata(self, meta_path: str, metadata: dict) -> None:
         """Save metadata to JSON file"""
         import json
+        temp_path = f"{meta_path}.tmp"  # Define temp_path before try block
         try:
             if not isinstance(metadata, dict):
                 metadata = {"columns": {}}
@@ -467,8 +468,6 @@ class DataOperations:
 
             loop = asyncio.get_event_loop()
             with ThreadPoolExecutor() as pool:
-                temp_path = f"{meta_path}.tmp"
-                
                 def safe_write():
                     with open(temp_path, 'w', encoding='utf-8') as f:
                         json.dump(metadata, f, indent=2, ensure_ascii=False)
